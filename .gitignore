@@ -1,0 +1,69 @@
+# --- 認証情報・環境変数（絶対に commit しない） ---
+.env
+.env.local
+.env.*.local
+config/service-account.json
+config/*.json
+config/*.key
+config/*.pem
+!config/.gitkeep
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- 仮想環境 ---
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# --- テスト ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.hypothesis/
+coverage.xml
+*.cover
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- ログ・出力 ---
+logs/
+*.log
+output/
+*.csv
+!tests/fixtures/*.csv
+
+# --- キャッシュ ---
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
