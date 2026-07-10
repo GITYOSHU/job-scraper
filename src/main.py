@@ -1,8 +1,11 @@
 """エントリポイント: CLI から実行する。
 
 使用例:
-    # デフォルト: CSV に出力
-    python -m src.main --keyword "エンジニア" --location "東京" --max-pages 3
+    # ハローワーク (デフォルト・電話番号/代表者名まで取得可・BAN リスク低)
+    python -m src.main --keyword "エンジニア" --max-pages 1
+
+    # Indeed に切替 (電話番号/代表者名は基本取れない)
+    python -m src.main --keyword "エンジニア" --site indeed
 
     # Google Sheets に書き込み (要: config/service-account.json + .env)
     python -m src.main --keyword "エンジニア" --sheets
@@ -22,6 +25,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .csv_writer import CsvWriter
+from .hellowork import HelloWorkScraper
 from .scraper import IndeedScraper
 
 
@@ -41,10 +45,16 @@ def _configure_logging(log_level: str, log_file: str | None) -> None:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Indeed 求人スクレイパー（技術検証・個人利用専用）",
+        description="求人スクレイパー（ハローワーク / Indeed 対応）",
+    )
+    parser.add_argument(
+        "--site",
+        choices=["hellowork", "indeed"],
+        default="hellowork",
+        help="対象サイト（デフォルト: hellowork）",
     )
     parser.add_argument("--keyword", required=True, help="検索キーワード（例: エンジニア）")
-    parser.add_argument("--location", default="", help="勤務地（例: 東京）")
+    parser.add_argument("--location", default="", help="勤務地（Indeed のみ有効。例: 東京）")
     parser.add_argument("--max-pages", type=int, default=1, help="取得ページ数（デフォルト: 1）")
     parser.add_argument(
         "--output-dir",
@@ -98,10 +108,14 @@ def main() -> int:
     args = _parse_args()
 
     headless = os.getenv("HEADLESS", "true").lower() == "true"
-    with IndeedScraper(
-        request_delay_seconds=float(os.getenv("REQUEST_DELAY_SECONDS", "3")),
-        headless=headless,
-    ) as scraper:
+    delay = float(os.getenv("REQUEST_DELAY_SECONDS", "3"))
+
+    if args.site == "hellowork":
+        scraper_ctx = HelloWorkScraper(request_delay_seconds=delay, headless=headless)
+    else:
+        scraper_ctx = IndeedScraper(request_delay_seconds=delay, headless=headless)
+
+    with scraper_ctx as scraper:
         postings = list(
             scraper.search(
                 keyword=args.keyword,
@@ -109,7 +123,7 @@ def main() -> int:
                 max_pages=args.max_pages,
             )
         )
-    logger.info(f"合計 {len(postings)} 件の求人を取得しました。")
+    logger.info(f"合計 {len(postings)} 件の求人を取得しました（site={args.site}）。")
 
     if args.dry_run:
         for posting in postings:

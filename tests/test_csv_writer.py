@@ -42,7 +42,7 @@ def test_write_creates_file_with_header_and_rows(
 
     assert rows[0] == SHEET_HEADER
     assert rows[1][0] == "株式会社サンプル"
-    assert rows[1][4] == "https://example.com/job/1"
+    assert rows[1][5] == "https://example.com/job/1"
     assert rows[2][0] == "株式会社ミニマル"
     assert rows[2][1] == ""
 

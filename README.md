@@ -1,22 +1,30 @@
 # job-scraper
 
-Indeed 等の求人サイトから企業情報を収集して Google スプレッドシートに書き込むツール。
+求人サイト（ハローワーク / Indeed）から企業情報を収集して CSV / Google スプレッドシートに書き込むツール。
 
-## ⚠️ 重要な注意事項
+## 対応サイト
 
-- **Indeed の利用規約はスクレイピングを明確に禁止しています**。本ツールは技術検証・個人利用目的で作成されており、商用利用・大規模な自動収集は行わないでください。
-- IP ブロック、法的リスク（不正競争防止法、著作権法違反等）を承知の上で使用してください。
-- 実運用が必要な場合は Indeed Publisher API 等の公式 API 利用を検討してください。
+| サイト | 電話番号 | 代表者名 | 業種 | BAN リスク | 推奨度 |
+|--------|----------|----------|------|-----------|--------|
+| **ハローワーク**（デフォルト） | ✅ 93% | ✅ 93% | ✅ 100% | 低（公的サイト） | ⭐⭐⭐⭐⭐ |
+| Indeed | ❌ regex 抽出のみ | ❌ | ❌ | 高（ToS 違反） | ⭐ |
+
+## ⚠️ 注意事項
+
+- **Indeed の利用規約はスクレイピングを禁止**しています。Indeed モードは技術検証・個人利用目的のみ。連続アクセスで即 IP ブロックされます。
+- ハローワークは公的サイトのため BAN リスクは低いですが、大量アクセスは避けてください（`REQUEST_DELAY_SECONDS` を長めに）。
 
 ## 収集項目
 
-| 項目 | 備考 |
-|------|------|
-| 会社名 | 求人ページから抽出 |
-| 住所 | 記載がある場合のみ |
-| 電話番号 | Indeed には基本非掲載。企業サイト経由の追加取得が必要 |
-| 業種 | 求人カテゴリ・企業情報から推定 |
-| 掲載求人 URL | 求人詳細ページの URL |
+| 項目 | ハローワーク | Indeed |
+|------|-------------|--------|
+| 会社名 | ✅ 100% | ✅ 100% |
+| 住所 | ✅ 93% | ✅ 100% |
+| 電話番号 | ✅ 93% | △ 求人本文から regex 抽出 |
+| 業種（産業分類） | ✅ 100% | ❌ |
+| 代表者名 | ✅ 93% | ❌ |
+| 掲載求人 URL | ✅ 100% | ✅ 100% |
+| 取得日時 | ✅ 自動付与 (JST) | ✅ 自動付与 (JST) |
 
 ## 技術スタック
 
@@ -54,8 +62,11 @@ pip install -r requirements.txt
 ### CSV 出力（デフォルト）
 
 ```bash
-# output/jobs-YYYYMMDD-HHMMSS.csv に書き出し
-python -m src.main --keyword "エンジニア" --location "東京" --max-pages 3
+# ハローワーク（デフォルト・電話/代表者名まで取得）
+python -m src.main --keyword "エンジニア" --max-pages 1
+
+# Indeed に切替（電話/代表者名は基本取れない・BAN リスクあり）
+python -m src.main --site indeed --keyword "エンジニア" --location "東京" --max-pages 1
 
 # ファイル名指定
 python -m src.main --keyword "エンジニア" --filename result.csv
@@ -84,9 +95,11 @@ python -m src.main --keyword "エンジニア" --max-pages 1 --dry-run
 job-scraper/
 ├── src/
 │   ├── __init__.py
-│   ├── main.py           # エントリポイント
-│   ├── scraper.py        # 求人サイトスクレイピング
-│   ├── csv_writer.py     # CSV 書き出し（デフォルト）
+│   ├── main.py           # CLI エントリポイント（--site で切替）
+│   ├── hellowork.py      # ハローワークスクレイパー（デフォルト）
+│   ├── scraper.py        # Indeed スクレイパー
+│   ├── extractors.py     # 求人本文からの regex 抽出（Indeed 電話番号用）
+│   ├── csv_writer.py     # CSV 書き出し（デフォルト出力）
 │   ├── sheets.py         # Google Sheets 書き込み（--sheets 指定時）
 │   └── models.py         # データモデル
 ├── tests/                # ユニットテスト

@@ -11,8 +11,9 @@ class JobPosting:
     Attributes:
         company_name: 会社名（必須）
         address: 住所（記載がある場合のみ）
-        phone_number: 電話番号（Indeed には基本非掲載）
-        industry: 業種・職種カテゴリ
+        phone_number: 電話番号（サイトによって取得可否が異なる）
+        industry: 業種・産業分類
+        representative_name: 代表者名（ハローワーク等では取得可）
         job_url: 求人詳細ページ URL（必須）
         scraped_at: 取得日時（ISO8601 文字列）
     """
@@ -22,6 +23,7 @@ class JobPosting:
     address: Optional[str] = None
     phone_number: Optional[str] = None
     industry: Optional[str] = None
+    representative_name: Optional[str] = None
     scraped_at: Optional[str] = None
 
     def to_row(self) -> list[str]:
@@ -31,6 +33,7 @@ class JobPosting:
             self.address or "",
             self.phone_number or "",
             self.industry or "",
+            self.representative_name or "",
             self.job_url,
             self.scraped_at or "",
         ]
@@ -44,6 +47,7 @@ SHEET_HEADER: list[str] = [
     "住所",
     "電話番号",
     "業種",
+    "代表者名",
     "掲載求人URL",
     "取得日時",
 ]

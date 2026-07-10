@@ -10,14 +10,16 @@ def test_to_row_returns_columns_in_header_order():
         address="東京都渋谷区",
         phone_number="03-1234-5678",
         industry="IT",
+        representative_name="山田太郎",
         scraped_at="2026-07-10T12:00:00+09:00",
     )
     row = posting.to_row()
 
     assert len(row) == len(SHEET_HEADER)
     assert row[0] == "株式会社テスト"
-    assert row[4] == "https://example.com/job/1"
-    assert row[5] == "2026-07-10T12:00:00+09:00"
+    assert row[4] == "山田太郎"
+    assert row[5] == "https://example.com/job/1"
+    assert row[6] == "2026-07-10T12:00:00+09:00"
 
 
 def test_to_row_replaces_none_with_empty_string():
@@ -30,7 +32,8 @@ def test_to_row_replaces_none_with_empty_string():
     assert row[1] == ""
     assert row[2] == ""
     assert row[3] == ""
-    assert row[5] == ""
+    assert row[4] == ""
+    assert row[6] == ""
 
 
 def test_sheet_header_has_expected_columns():
@@ -39,6 +42,7 @@ def test_sheet_header_has_expected_columns():
         "住所",
         "電話番号",
         "業種",
+        "代表者名",
         "掲載求人URL",
         "取得日時",
     ]
