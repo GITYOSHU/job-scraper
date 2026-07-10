@@ -88,7 +88,8 @@ class SheetsWriter:
             実際に追記した行数
         """
         worksheet = self._connect()
-        existing_urls = set(worksheet.col_values(6)[1:])
+        url_column_index = SHEET_HEADER.index("掲載求人URL") + 1
+        existing_urls = set(worksheet.col_values(url_column_index)[1:])
 
         new_rows = [
             posting.to_row()

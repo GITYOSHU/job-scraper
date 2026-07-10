@@ -130,7 +130,7 @@ class IndeedScraper:
         """求人詳細ページの HTML をパースして JobPosting を返す。
 
         NOTE: セレクタは Indeed の DOM 変更により壊れやすい。
-        代表者名・電話番号は基本的に Indeed には掲載されないため、
+        電話番号は基本的に Indeed には掲載されないため、
         別途企業サイト・法人番号 API 等の併用が必要。
         """
         soup = BeautifulSoup(html, "lxml")
@@ -160,7 +160,6 @@ class IndeedScraper:
             address=address,
             phone_number=None,
             industry=industry,
-            representative_name=None,
             job_url=url,
             scraped_at=datetime.now(JST).isoformat(timespec="seconds"),
         )
