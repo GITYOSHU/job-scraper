@@ -26,6 +26,7 @@ from playwright.sync_api import (
     sync_playwright,
 )
 
+from .extractors import extract_phone_number
 from .models import JobPosting
 
 logger = logging.getLogger(__name__)
@@ -223,14 +224,39 @@ class IndeedScraper:
             "[data-testid='job-industry']",
         ])
 
+        phone_number = self._extract_phone_from_body(soup)
+
         return JobPosting(
             company_name=company_name,
             address=address,
-            phone_number=None,
+            phone_number=phone_number,
             industry=industry,
             job_url=url,
             scraped_at=datetime.now(JST).isoformat(timespec="seconds"),
         )
+
+    @staticmethod
+    def _extract_phone_from_body(soup: BeautifulSoup) -> Optional[str]:
+        """求人詳細ページの本文テキストから電話番号を regex 抽出。
+
+        Indeed の構造化フィールドには電話番号無いが、求人本文中に
+        「連絡先」「お問い合わせ」等の項で記載されるケースが多い。
+        """
+        candidates = [
+            "#jobDescriptionText",
+            "[data-testid='jobsearch-JobDescriptionText']",
+            ".jobsearch-jobDescriptionText",
+            ".jobsearch-JobComponent-description",
+        ]
+        for sel in candidates:
+            element = soup.select_one(sel)
+            if not element:
+                continue
+            text = element.get_text(separator="\n", strip=True)
+            phone = extract_phone_number(text)
+            if phone:
+                return phone
+        return extract_phone_number(soup.get_text(separator="\n", strip=True))
 
     @staticmethod
     def _select_text(soup: BeautifulSoup, selectors: list[str]) -> Optional[str]:
