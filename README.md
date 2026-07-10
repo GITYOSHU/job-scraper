@@ -36,25 +36,46 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Google Sheets API 設定
+### 2. (オプション) Google Sheets API 設定
+
+**CSV 出力だけで使う場合はスキップ可**。スプシに直接書き込みたい場合のみ設定。
 
 1. [Google Cloud Console](https://console.cloud.google.com/) でプロジェクト作成
 2. Google Sheets API + Google Drive API を有効化
 3. サービスアカウント作成 → JSON 鍵をダウンロード
 4. `config/service-account.json` として配置
 5. 書き込み先スプレッドシートをサービスアカウントのメールアドレスに共有
+6. `cp .env.example .env` → `SPREADSHEET_ID` を記入
 
-### 3. 環境変数設定
-
-```bash
-cp .env.example .env
-# .env を編集して SPREADSHEET_ID などを設定
-```
+詳細: [`docs/setup-google-sheets.md`](./docs/setup-google-sheets.md)
 
 ## 使い方
 
+### CSV 出力（デフォルト）
+
 ```bash
+# output/jobs-YYYYMMDD-HHMMSS.csv に書き出し
 python -m src.main --keyword "エンジニア" --location "東京" --max-pages 3
+
+# ファイル名指定
+python -m src.main --keyword "エンジニア" --filename result.csv
+
+# 出力先ディレクトリ指定
+python -m src.main --keyword "エンジニア" --output-dir ~/Desktop
+```
+
+出力 CSV は BOM 付き UTF-8。Excel でそのまま開いても文字化けしない。
+
+### スプシに直接書き込み（要: サービスアカウント設定）
+
+```bash
+python -m src.main --keyword "エンジニア" --sheets
+```
+
+### 動作確認（書き込み無し）
+
+```bash
+python -m src.main --keyword "エンジニア" --max-pages 1 --dry-run
 ```
 
 ## ディレクトリ構成
@@ -65,14 +86,17 @@ job-scraper/
 │   ├── __init__.py
 │   ├── main.py           # エントリポイント
 │   ├── scraper.py        # 求人サイトスクレイピング
-│   ├── sheets.py         # Google Sheets 書き込み
+│   ├── csv_writer.py     # CSV 書き出し（デフォルト）
+│   ├── sheets.py         # Google Sheets 書き込み（--sheets 指定時）
 │   └── models.py         # データモデル
 ├── tests/                # ユニットテスト
+├── output/               # CSV 出力先（.gitignore 対象）
 ├── config/               # 認証情報（.gitignore 対象）
 ├── docs/                 # ドキュメント
 ├── .env.example
 ├── .gitignore
 ├── requirements.txt
+├── requirements-dev.txt  # pytest 等
 └── README.md
 ```
 
