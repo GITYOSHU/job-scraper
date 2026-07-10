@@ -97,18 +97,18 @@ def main() -> int:
 
     args = _parse_args()
 
-    scraper = IndeedScraper(
+    headless = os.getenv("HEADLESS", "true").lower() == "true"
+    with IndeedScraper(
         request_delay_seconds=float(os.getenv("REQUEST_DELAY_SECONDS", "3")),
-        rotate_user_agent=os.getenv("USER_AGENT_ROTATION", "true").lower() == "true",
-    )
-
-    postings = list(
-        scraper.search(
-            keyword=args.keyword,
-            location=args.location,
-            max_pages=args.max_pages,
+        headless=headless,
+    ) as scraper:
+        postings = list(
+            scraper.search(
+                keyword=args.keyword,
+                location=args.location,
+                max_pages=args.max_pages,
+            )
         )
-    )
     logger.info(f"合計 {len(postings)} 件の求人を取得しました。")
 
     if args.dry_run:

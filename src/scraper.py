@@ -1,7 +1,10 @@
-"""Indeed 求人ページのスクレイピングロジック。
+"""Indeed 求人ページのスクレイピングロジック (Playwright 版)。
 
 ⚠️ 注意: Indeed の利用規約はスクレイピングを禁止しています。
 本モジュールは技術検証・個人利用目的です。実運用時は公式 API を使用してください。
+
+素の requests では TLS フィンガープリント / JS 実行チェックで 403 になるため、
+実ブラウザ (Chromium via Playwright) を経由してアクセスする。
 """
 
 from __future__ import annotations
@@ -9,14 +12,19 @@ from __future__ import annotations
 import logging
 import random
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Iterator, Optional
 from urllib.parse import urlencode, urljoin
 
-import requests
 from bs4 import BeautifulSoup
-from fake_useragent import UserAgent
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from playwright.sync_api import (
+    Browser,
+    Page,
+    Playwright,
+    TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
+)
 
 from .models import JobPosting
 
@@ -25,53 +33,109 @@ logger = logging.getLogger(__name__)
 INDEED_BASE_URL = "https://jp.indeed.com"
 JST = timezone(timedelta(hours=9))
 
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+
 
 class ScrapingError(Exception):
     """スクレイピング処理中に発生したエラーの基底クラス。"""
 
 
 class IndeedScraper:
-    """Indeed 求人ページのスクレイパー。
+    """Indeed 求人ページのスクレイパー (Playwright ベース)。
 
     Args:
         request_delay_seconds: リクエスト間の待機秒数（BAN 回避のため 3 秒以上推奨）
-        rotate_user_agent: True なら毎リクエスト User-Agent を変更
-        session: 外部から提供する requests.Session（テスト用途）
+        headless: True でヘッドレスモード。ブロック検証時は False にすると挙動が見える
+        user_agent: リクエストに使う User-Agent
+        page_load_timeout_ms: ページロードのタイムアウト（ミリ秒）
+
+    Usage:
+        with IndeedScraper() as scraper:
+            for posting in scraper.search(keyword="エンジニア", max_pages=1):
+                print(posting)
     """
 
     def __init__(
         self,
         request_delay_seconds: float = 3.0,
-        rotate_user_agent: bool = True,
-        session: Optional[requests.Session] = None,
+        headless: bool = True,
+        user_agent: str = DEFAULT_USER_AGENT,
+        page_load_timeout_ms: int = 30_000,
     ) -> None:
         self.request_delay_seconds = request_delay_seconds
-        self.rotate_user_agent = rotate_user_agent
-        self.session = session or requests.Session()
-        self._ua = UserAgent() if rotate_user_agent else None
+        self.headless = headless
+        self.user_agent = user_agent
+        self.page_load_timeout_ms = page_load_timeout_ms
+        self._playwright: Optional[Playwright] = None
+        self._browser: Optional[Browser] = None
 
-    def _headers(self) -> dict[str, str]:
-        ua = self._ua.random if self._ua else "Mozilla/5.0 (compatible; JobScraper/0.1)"
-        return {
-            "User-Agent": ua,
-            "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }
+    def __enter__(self) -> "IndeedScraper":
+        self._playwright = sync_playwright().start()
+        self._browser = self._playwright.chromium.launch(
+            headless=self.headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ],
+        )
+        return self
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=2, min=4, max=30),
-        retry=retry_if_exception_type((requests.RequestException, ScrapingError)),
-        reraise=True,
-    )
-    def _fetch(self, url: str) -> str:
-        logger.info(f"Fetching: {url}")
-        response = self.session.get(url, headers=self._headers(), timeout=30)
-        if response.status_code == 429:
-            raise ScrapingError(f"Rate limited (429) at {url}")
-        if response.status_code >= 400:
-            raise ScrapingError(f"HTTP {response.status_code} at {url}")
-        return response.text
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._browser is not None:
+            self._browser.close()
+        if self._playwright is not None:
+            self._playwright.stop()
+
+    @contextmanager
+    def _new_page(self) -> Iterator[Page]:
+        assert self._browser is not None, "Use IndeedScraper as context manager."
+        context = self._browser.new_context(
+            user_agent=self.user_agent,
+            locale="ja-JP",
+            viewport={"width": 1440, "height": 900},
+            extra_http_headers={
+                "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
+            },
+        )
+        page = context.new_page()
+        try:
+            yield page
+        finally:
+            page.close()
+            context.close()
+
+    def _fetch_html(self, url: str) -> Optional[str]:
+        """指定 URL のレンダリング済み HTML を返す。403/タイムアウト時は None。"""
+        with self._new_page() as page:
+            try:
+                response = page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=self.page_load_timeout_ms,
+                )
+            except PlaywrightTimeoutError:
+                logger.warning(f"ページロードタイムアウト: {url}")
+                return None
+
+            if response is None:
+                logger.warning(f"レスポンス取得失敗: {url}")
+                return None
+
+            status = response.status
+            if status >= 400:
+                logger.warning(f"HTTP {status} at {url}")
+                return None
+
+            try:
+                page.wait_for_load_state("networkidle", timeout=5_000)
+            except PlaywrightTimeoutError:
+                pass
+
+            return page.content()
 
     def search(
         self,
@@ -79,38 +143,28 @@ class IndeedScraper:
         location: str = "",
         max_pages: int = 1,
     ) -> Iterator[JobPosting]:
-        """検索結果ページを巡回して求人を yield する。
-
-        Args:
-            keyword: 検索キーワード（職種等）
-            location: 勤務地
-            max_pages: 取得する検索結果ページ数
-
-        Yields:
-            JobPosting: 1 件ずつの求人データ
-        """
-        for page in range(max_pages):
-            params = {"q": keyword, "l": location, "start": page * 10}
+        """検索結果ページを巡回して求人を yield する。"""
+        for page_index in range(max_pages):
+            params = {"q": keyword, "l": location, "start": page_index * 10}
             search_url = f"{INDEED_BASE_URL}/jobs?{urlencode(params)}"
-            try:
-                html = self._fetch(search_url)
-            except (requests.RequestException, ScrapingError) as e:
-                logger.warning(f"検索ページ取得失敗 page={page}: {e}")
+            logger.info(f"Fetching search page {page_index + 1}/{max_pages}: {search_url}")
+
+            html = self._fetch_html(search_url)
+            if html is None:
+                logger.warning(f"検索ページ取得失敗 page={page_index}")
                 continue
 
             job_urls = list(self._extract_job_urls(html))
-            logger.info(f"page={page + 1}/{max_pages}: {len(job_urls)} 件の求人 URL を検出")
+            logger.info(f"page={page_index + 1}: {len(job_urls)} 件の求人 URL を検出")
 
             for job_url in job_urls:
                 self._sleep()
-                try:
-                    detail_html = self._fetch(job_url)
-                    posting = self._parse_job_detail(detail_html, job_url)
-                    if posting:
-                        yield posting
-                except (requests.RequestException, ScrapingError) as e:
-                    logger.warning(f"求人詳細取得失敗 url={job_url}: {e}")
+                detail_html = self._fetch_html(job_url)
+                if detail_html is None:
                     continue
+                posting = self._parse_job_detail(detail_html, job_url)
+                if posting:
+                    yield posting
 
             self._sleep()
 
@@ -121,10 +175,23 @@ class IndeedScraper:
         実行時に動作しなくなった場合はセレクタを見直すこと。
         """
         soup = BeautifulSoup(html, "lxml")
-        for anchor in soup.select("a[href*='/rc/clk'], a[href*='/viewjob']"):
-            href = anchor.get("href", "")
-            if href:
-                yield urljoin(INDEED_BASE_URL, href)
+        seen: set[str] = set()
+        selectors = [
+            "a[href*='/rc/clk']",
+            "a[href*='/viewjob']",
+            "a.jcs-JobTitle",
+            "h2.jobTitle a",
+        ]
+        for sel in selectors:
+            for anchor in soup.select(sel):
+                href = anchor.get("href", "")
+                if not href:
+                    continue
+                full_url = urljoin(INDEED_BASE_URL, href)
+                if full_url in seen:
+                    continue
+                seen.add(full_url)
+                yield full_url
 
     def _parse_job_detail(self, html: str, url: str) -> Optional[JobPosting]:
         """求人詳細ページの HTML をパースして JobPosting を返す。
@@ -140,6 +207,7 @@ class IndeedScraper:
             "[data-testid='inlineHeader-companyName']",
             "div[data-company-name] a",
             ".jobsearch-CompanyInfoContainer a",
+            ".jobsearch-JobInfoHeader-companyNameSimple",
         ])
         if not company_name:
             logger.debug(f"会社名抽出失敗: {url}")
