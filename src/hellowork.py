@@ -117,34 +117,51 @@ class HelloWorkScraper:
         if location:
             logger.warning("ハローワークの location 絞り込みは未実装のため無視します。")
 
-        page = self._context.new_page()
+        result_page = self._context.new_page()
+        detail_page = self._context.new_page()
         try:
-            yield from self._crawl(page, keyword, max_pages)
+            yield from self._crawl(result_page, detail_page, keyword, max_pages)
         finally:
-            page.close()
+            detail_page.close()
+            result_page.close()
 
-    def _crawl(self, page: Page, keyword: str, max_pages: int) -> Iterator[JobPosting]:
+    def _crawl(
+        self,
+        result_page: Page,
+        detail_page: Page,
+        keyword: str,
+        max_pages: int,
+    ) -> Iterator[JobPosting]:
+        """result_page は検索結果を保持し pagination で更新。detail_page は詳細取得用に使い回す。"""
         logger.info("検索ページを開く")
-        page.goto(SEARCH_ENTRY_URL, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
-        page.fill("#ID_freeWordInput", keyword)
+        result_page.goto(
+            SEARCH_ENTRY_URL, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms
+        )
+        result_page.fill("#ID_freeWordInput", keyword)
 
         logger.info(f"検索実行: keyword='{keyword}'")
-        with page.expect_navigation(wait_until="domcontentloaded", timeout=self.page_load_timeout_ms):
-            page.locator("input[value='検索'], button:has-text('検索')").first.click()
+        with result_page.expect_navigation(
+            wait_until="domcontentloaded", timeout=self.page_load_timeout_ms
+        ):
+            result_page.locator("input[value='検索'], button:has-text('検索')").first.click()
 
         for page_index in range(max_pages):
             logger.info(f"結果ページ {page_index + 1}/{max_pages} 処理")
-            detail_urls = self._extract_detail_urls(page.content())
+            detail_urls = self._extract_detail_urls(result_page.content())
             logger.info(f"  詳細 URL 数: {len(detail_urls)}")
+
+            if not detail_urls:
+                logger.info("求人が見つかりませんでした。")
+                break
 
             for url in detail_urls:
                 self._sleep()
-                posting = self._fetch_and_parse_detail(page, url)
+                posting = self._fetch_and_parse_detail(detail_page, url)
                 if posting:
                     yield posting
 
             if page_index + 1 < max_pages:
-                if not self._go_next_page(page):
+                if not self._go_next_page(result_page):
                     logger.info("次のページ無し。終了。")
                     break
 
@@ -216,19 +233,29 @@ class HelloWorkScraper:
         return None
 
     def _go_next_page(self, page: Page) -> bool:
-        """次のページに遷移。存在しなければ False。
+        """検索結果の次ページに遷移。存在しなければ False。
 
-        TODO: 実装未検証。ページネーションボタン (次へ) の locator 要確認。
+        ハローワークは name="fwListNaviBtnNext" の submit ボタン。
+        検索ボタン同様、hidden 状態の要素が混在するため JS 経由で click。
         """
-        next_btn = page.locator(
-            "input[value='次へ'], button:has-text('次へ'), a:has-text('次へ')"
-        ).first
-        if next_btn.count() == 0:
-            return False
         try:
-            with page.expect_navigation(wait_until="domcontentloaded", timeout=self.page_load_timeout_ms):
-                next_btn.click()
-        except (PlaywrightTimeoutError, Exception) as e:
+            with page.expect_navigation(
+                wait_until="domcontentloaded", timeout=self.page_load_timeout_ms
+            ):
+                clicked = page.evaluate("""() => {
+                    const btns = Array.from(document.querySelectorAll("input[name='fwListNaviBtnNext']"));
+                    // 可視 (親要素あり) のものを優先、なければ最初の 1 個
+                    const visible = btns.find(b => b.offsetParent !== null) || btns[0];
+                    if (!visible) return false;
+                    visible.click();
+                    return true;
+                }""")
+                if not clicked:
+                    return False
+        except PlaywrightTimeoutError:
+            logger.warning("次ページ遷移タイムアウト")
+            return False
+        except Exception as e:
             logger.warning(f"次ページ遷移失敗: {e}")
             return False
         return True
