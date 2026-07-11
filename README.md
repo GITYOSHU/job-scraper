@@ -113,6 +113,35 @@ job-scraper/
 └── README.md
 ```
 
+## GitHub Actions で自動実行
+
+`.github/workflows/scrape-hellowork.yml` により GitHub 上で完全自動実行可能。
+PC オフラインでも動作する。
+
+### 手動実行
+
+1. https://github.com/GITYOSHU/job-scraper/actions を開く
+2. 左メニュー「Scrape HelloWork」を選択
+3. 「Run workflow」ボタンを押す
+4. パラメータを指定して実行:
+   - `keyword`: 検索キーワード（デフォルト: エンジニア）
+   - `max_pages`: 取得ページ数（デフォルト: 3 = 90 件）
+   - `request_delay_seconds`: リクエスト間隔秒（デフォルト: 3）
+
+### 定期実行
+
+デフォルトで **毎日 JST 9:00** に自動実行。`.github/workflows/scrape-hellowork.yml` の `cron` 部分で調整可能。
+
+### CSV の受け取り
+
+実行完了後、workflow ページの `Artifacts` セクションから CSV ダウンロード可能（保存期間 30 日）。
+
+### GitHub Actions 無料枠
+
+- Private リポジトリ: 月 2000 分（33 時間）
+- Public リポジトリ: 無制限
+- 1000 件取得 = 約 80 分 → 月 20 回程度が上限目安
+
 ## ライセンス
 
 Private / 個人利用専用

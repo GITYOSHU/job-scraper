@@ -1,0 +1,105 @@
+name: Scrape HelloWork
+
+on:
+  # 手動トリガー（GitHub UI から実行）
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: '検索キーワード'
+        required: true
+        default: 'エンジニア'
+        type: string
+      max_pages:
+        description: '取得ページ数（1 ページ 30 件）'
+        required: true
+        default: '3'
+        type: string
+      request_delay_seconds:
+        description: 'リクエスト間隔（秒）'
+        required: false
+        default: '3'
+        type: string
+
+  # 定期実行（毎日 JST 9:00 = UTC 0:00）
+  schedule:
+    - cron: '0 0 * * *'
+
+# 同時実行を 1 個に制限（重複実行防止）
+concurrency:
+  group: scrape-hellowork
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300  # 最大 5 時間（GitHub Actions 上限は 6 時間）
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: |
+          playwright install --with-deps chromium
+
+      - name: Resolve run parameters
+        id: params
+        run: |
+          KEYWORD="${{ github.event.inputs.keyword || 'エンジニア' }}"
+          MAX_PAGES="${{ github.event.inputs.max_pages || '3' }}"
+          DELAY="${{ github.event.inputs.request_delay_seconds || '3' }}"
+          TIMESTAMP=$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)
+          FILENAME="hw-${TIMESTAMP}.csv"
+          echo "keyword=${KEYWORD}" >> "$GITHUB_OUTPUT"
+          echo "max_pages=${MAX_PAGES}" >> "$GITHUB_OUTPUT"
+          echo "delay=${DELAY}" >> "$GITHUB_OUTPUT"
+          echo "filename=${FILENAME}" >> "$GITHUB_OUTPUT"
+          echo "timestamp=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
+
+      - name: Run scraper
+        env:
+          REQUEST_DELAY_SECONDS: ${{ steps.params.outputs.delay }}
+          HEADLESS: 'true'
+          LOG_LEVEL: 'INFO'
+        run: |
+          python -m src.main \
+            --site hellowork \
+            --keyword "${{ steps.params.outputs.keyword }}" \
+            --max-pages ${{ steps.params.outputs.max_pages }} \
+            --filename "${{ steps.params.outputs.filename }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          FILE="output/${{ steps.params.outputs.filename }}"
+          if [ -f "$FILE" ]; then
+            LINES=$(wc -l < "$FILE")
+            echo "## スクレイピング完了" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- キーワード: ${{ steps.params.outputs.keyword }}" >> $GITHUB_STEP_SUMMARY
+            echo "- ページ数: ${{ steps.params.outputs.max_pages }}" >> $GITHUB_STEP_SUMMARY
+            echo "- ファイル: \`$FILE\`" >> $GITHUB_STEP_SUMMARY
+            echo "- 行数 (ヘッダー含む): $LINES" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ CSV ファイルが生成されませんでした" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload CSV as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hw-scrape-${{ steps.params.outputs.timestamp }}
+          path: output/${{ steps.params.outputs.filename }}
+          if-no-files-found: warn
+          retention-days: 30
