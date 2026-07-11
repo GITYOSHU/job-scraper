@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 
 from .csv_writer import CsvWriter
 from .hellowork import HelloWorkScraper
+from .proxy_config import load_proxy_from_env
 from .query_pools import hellowork_query_pool, indeed_query_pool
 from .scraper import BanDetectedError, IndeedScraper
 from .state import StateStore
@@ -50,7 +51,10 @@ def _configure_logging(log_level: str, log_file: str | None) -> None:
 def _make_scraper(site: str, delay: float, headless: bool):
     if site == "hellowork":
         return HelloWorkScraper(request_delay_seconds=delay, headless=headless)
-    return IndeedScraper(request_delay_seconds=delay, headless=headless)
+    proxy = load_proxy_from_env()
+    return IndeedScraper(
+        request_delay_seconds=delay, headless=headless, proxy=proxy
+    )
 
 
 def _cmd_scrape(args: argparse.Namespace, logger: logging.Logger) -> int:
@@ -166,6 +170,110 @@ def _cmd_export(args: argparse.Namespace, logger: logging.Logger) -> int:
     return 0
 
 
+def _cmd_validate(args: argparse.Namespace, logger: logging.Logger) -> int:
+    """Bright Data proxy 経由で N 件を実際に叩き、成功率と電話番号率を測定する。
+
+    proxy 未設定なら明示的にエラー。sample 上限まで tick を回し、
+    SQLite に保存された結果から成功率 / 電話率を集計。
+    """
+    from .query_pools import indeed_query_pool
+
+    proxy = load_proxy_from_env()
+    if not proxy:
+        logger.error(
+            "BRIGHTDATA_PROXY_URL (or PROXY_URL) が未設定です。"
+            "validate は proxy 経由での実測を目的とします。"
+        )
+        return 2
+
+    logger.info(
+        f"validate 開始: target_samples={args.samples} "
+        f"max_pages_per_tick={args.max_pages_per_tick}"
+    )
+
+    store = StateStore()
+    site = "indeed"
+    delay = float(os.getenv("REQUEST_DELAY_SECONDS", "1"))
+    headless = os.getenv("HEADLESS", "true").lower() == "true"
+
+    pool = indeed_query_pool()
+    baseline = store.counts(site)
+    baseline_total = baseline["total"]
+    baseline_phone = baseline["with_phone"]
+
+    ticks = 0
+    while True:
+        counts = store.counts(site)
+        newly_added = counts["total"] - baseline_total
+        if newly_added >= args.samples:
+            break
+        if store.is_paused(site):
+            logger.warning("pause 検知: validate 中断")
+            break
+
+        keyword, location = store.pick_next_query(site, pool)
+        logger.info(
+            f"tick #{ticks + 1}: keyword='{keyword}' location='{location}' "
+            f"(取得済 {newly_added}/{args.samples})"
+        )
+        run_id = store.start_run(site, keyword, location)
+        items_new = 0
+        items_dup = 0
+        status = "completed"
+
+        try:
+            with IndeedScraper(
+                request_delay_seconds=delay, headless=headless, proxy=proxy
+            ) as scraper:
+                for posting in scraper.search(
+                    keyword=keyword,
+                    location=location,
+                    max_pages=args.max_pages_per_tick,
+                ):
+                    if store.save_posting(posting, site, keyword, location):
+                        items_new += 1
+                    else:
+                        items_dup += 1
+                    if (store.counts(site)["total"] - baseline_total) >= args.samples:
+                        break
+        except BanDetectedError as e:
+            logger.error(f"validate 中に BAN 検知: {e}")
+            status = "banned"
+        except Exception as e:
+            logger.exception(f"validate 中エラー: {e}")
+            status = "error"
+        finally:
+            store.finish_run(run_id, items_new, items_dup, status=status)
+
+        ticks += 1
+        if status != "completed":
+            break
+
+    final = store.counts(site)
+    delta_total = final["total"] - baseline_total
+    delta_phone = final["with_phone"] - baseline_phone
+    phone_rate = (delta_phone / delta_total * 100) if delta_total else 0.0
+
+    print("=" * 50)
+    print("validate 結果")
+    print("=" * 50)
+    print(f"tick 回数           : {ticks}")
+    print(f"新規取得件数        : {delta_total}")
+    print(f"電話番号あり        : {delta_phone}")
+    print(f"電話番号率          : {phone_rate:.1f}%")
+    print(f"累積総件数          : {final['total']}")
+    print(f"累積電話番号あり    : {final['with_phone']}")
+    print("=" * 50)
+    print("5000 件到達必要 fetch (電話率実測ベース):")
+    if delta_phone > 0:
+        needed = int(5000 / (delta_phone / delta_total))
+        print(f"  推定必要 fetch 数 : {needed:,} 件")
+        cost_est = needed * 1.50 / 1000
+        print(f"  Bright Data PAYG コスト概算 : ${cost_est:.2f}")
+    print("=" * 50)
+    return 0
+
+
 def _write_to_sheets(postings: list, logger: logging.Logger) -> int:
     """Google Sheets 書き込み。sheets モジュールは遅延 import で最適化。"""
     from .sheets import SheetsWriter
@@ -214,13 +322,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--site", choices=["hellowork", "indeed"], default="indeed")
     p_export.add_argument("--output", required=True)
 
+    # validate (Bright Data 疎通 + 電話率実測)
+    p_validate = sub.add_parser(
+        "validate", help="Bright Data proxy 経由で N 件叩いて成功率 + 電話率を測定"
+    )
+    p_validate.add_argument("--samples", type=int, default=100, help="目標サンプル件数")
+    p_validate.add_argument(
+        "--max-pages-per-tick", type=int, default=1, help="1 tick 内の検索ページ数"
+    )
+
     return parser
 
 
 def _parse_args_with_legacy() -> argparse.Namespace:
     """後方互換: 旧 CLI (subcommand なし) を scrape として扱う。"""
     argv = sys.argv[1:]
-    known_commands = {"scrape", "tick", "status", "export"}
+    known_commands = {"scrape", "tick", "status", "export", "validate"}
     if not argv or (argv[0].startswith("-") and argv[0] not in known_commands):
         argv = ["scrape"] + argv
     return _build_parser().parse_args(argv)
@@ -243,6 +360,8 @@ def main() -> int:
         return _cmd_status(args, logger)
     if args.command == "export":
         return _cmd_export(args, logger)
+    if args.command == "validate":
+        return _cmd_validate(args, logger)
     _build_parser().print_help()
     return 2
 

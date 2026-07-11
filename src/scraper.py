@@ -71,12 +71,23 @@ class IndeedScraper:
         user_agent: str = DEFAULT_USER_AGENT,
         page_load_timeout_ms: int = 30_000,
         ban_threshold: int = 3,
+        proxy: Optional[dict] = None,
     ) -> None:
+        """
+        Args:
+            proxy: Playwright に渡す proxy 設定辞書。
+                例: {"server": "http://brd.superproxy.io:22225",
+                     "username": "brd-customer-hl_xxx-zone-yyy",
+                     "password": "..."}
+                None なら直接接続 (家庭用 IP or GitHub Actions IP)。
+                Bright Data Web Unlocker 経由なら anti-bot が透過される。
+        """
         self.request_delay_seconds = request_delay_seconds
         self.headless = headless
         self.user_agent = user_agent
         self.page_load_timeout_ms = page_load_timeout_ms
         self.ban_threshold = ban_threshold
+        self.proxy = proxy
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._consecutive_403 = 0
@@ -101,7 +112,7 @@ class IndeedScraper:
     @contextmanager
     def _new_page(self) -> Iterator[Page]:
         assert self._browser is not None, "Use IndeedScraper as context manager."
-        context = self._browser.new_context(
+        ctx_kwargs = dict(
             user_agent=self.user_agent,
             locale="ja-JP",
             viewport={"width": 1440, "height": 900},
@@ -109,6 +120,9 @@ class IndeedScraper:
                 "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
             },
         )
+        if self.proxy:
+            ctx_kwargs["proxy"] = self.proxy
+        context = self._browser.new_context(**ctx_kwargs)
         page = context.new_page()
         try:
             yield page
