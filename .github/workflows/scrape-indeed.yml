@@ -1,22 +1,25 @@
 name: Scrape Indeed
 
 on:
+  # 30 分ごとに自動 tick
+  schedule:
+    - cron: '*/30 * * * *'
+
   # 手動トリガー
   workflow_dispatch:
     inputs:
-      keyword:
-        description: '検索キーワード'
+      mode:
+        description: '実行モード'
         required: true
-        default: 'エンジニア'
-        type: string
-      location:
-        description: '勤務地（例: 東京）'
-        required: false
-        default: ''
-        type: string
+        default: 'tick'
+        type: choice
+        options:
+          - tick
+          - status
+          - export
       max_pages:
-        description: '取得ページ数（1 ページ 15 件・BAN 回避のため小さめ推奨）'
-        required: true
+        description: 'tick 内で 1 検索クエリあたりの取得ページ数'
+        required: false
         default: '1'
         type: string
       request_delay_seconds:
@@ -25,23 +28,30 @@ on:
         default: '60'
         type: string
 
-# 同時実行を 1 個に制限
+# 同時実行を 1 個に制限（重複 tick 防止）
 concurrency:
   group: scrape-indeed
   cancel-in-progress: false
 
 jobs:
   scrape:
-    # ⚠️ Indeed は GitHub の Azure IP を即 BAN する。
-    # 家庭用 IP を持つ self-hosted runner (家 Mac) でのみ実行する。
+    # 家 Mac (家庭用 IP) 限定。GitHub Cloud IP は Indeed に即 BAN されるため。
     runs-on: [self-hosted, macOS, indeed-capable]
-    timeout-minutes: 300
+    timeout-minutes: 60
+
+    env:
+      # SQLite DB は self-hosted runner 上に永続化 (checkout workspace 外)
+      STATE_DB: /Users/yoshu/job-scraper/data/state.db
+      REQUEST_DELAY_SECONDS: ${{ github.event.inputs.request_delay_seconds || '60' }}
+      HEADLESS: 'true'
+      LOG_LEVEL: 'INFO'
+      BAN_PAUSE_SECONDS: '3600'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Reuse local venv from /Users/yoshu/job-scraper
+      - name: Resolve local venv
         id: venv
         run: |
           LOCAL_VENV="/Users/yoshu/job-scraper/.venv"
@@ -50,64 +60,47 @@ jobs:
             exit 1
           fi
           echo "python=${LOCAL_VENV}/bin/python" >> "$GITHUB_OUTPUT"
-          echo "使用する Python: ${LOCAL_VENV}/bin/python"
           ${LOCAL_VENV}/bin/python --version
 
-      - name: Verify dependencies (playwright / bs4 / dotenv)
+      - name: Resolve mode
+        id: mode
         run: |
-          ${{ steps.venv.outputs.python }} -c "import playwright; import bs4; import dotenv; print('deps OK')"
-
-      - name: Resolve run parameters
-        id: params
-        run: |
-          KEYWORD="${{ github.event.inputs.keyword || 'エンジニア' }}"
-          LOCATION="${{ github.event.inputs.location || '' }}"
+          MODE="${{ github.event.inputs.mode || 'tick' }}"
           MAX_PAGES="${{ github.event.inputs.max_pages || '1' }}"
-          DELAY="${{ github.event.inputs.request_delay_seconds || '60' }}"
           TIMESTAMP=$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)
-          FILENAME="indeed-${TIMESTAMP}.csv"
-          echo "keyword=${KEYWORD}" >> "$GITHUB_OUTPUT"
-          echo "location=${LOCATION}" >> "$GITHUB_OUTPUT"
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
           echo "max_pages=${MAX_PAGES}" >> "$GITHUB_OUTPUT"
-          echo "delay=${DELAY}" >> "$GITHUB_OUTPUT"
-          echo "filename=${FILENAME}" >> "$GITHUB_OUTPUT"
           echo "timestamp=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
 
-      - name: Run scraper (Indeed via self-hosted / 家庭用 IP)
-        env:
-          REQUEST_DELAY_SECONDS: ${{ steps.params.outputs.delay }}
-          HEADLESS: 'true'
-          LOG_LEVEL: 'INFO'
+      - name: Run tick
+        if: steps.mode.outputs.mode == 'tick'
         run: |
-          ${{ steps.venv.outputs.python }} -m src.main \
+          ${{ steps.venv.outputs.python }} -m src.main tick \
             --site indeed \
-            --keyword "${{ steps.params.outputs.keyword }}" \
-            --location "${{ steps.params.outputs.location }}" \
-            --max-pages ${{ steps.params.outputs.max_pages }} \
-            --filename "${{ steps.params.outputs.filename }}"
+            --max-pages ${{ steps.mode.outputs.max_pages }}
 
-      - name: Summary
+      - name: Show status
         if: always()
         run: |
-          FILE="output/${{ steps.params.outputs.filename }}"
-          if [ -f "$FILE" ]; then
-            LINES=$(wc -l < "$FILE")
-            echo "## Indeed スクレイピング完了" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "- キーワード: ${{ steps.params.outputs.keyword }}" >> $GITHUB_STEP_SUMMARY
-            echo "- 勤務地: ${{ steps.params.outputs.location }}" >> $GITHUB_STEP_SUMMARY
-            echo "- ページ数: ${{ steps.params.outputs.max_pages }}" >> $GITHUB_STEP_SUMMARY
-            echo "- 待機秒: ${{ steps.params.outputs.delay }}" >> $GITHUB_STEP_SUMMARY
-            echo "- 行数 (ヘッダー含む): $LINES" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ CSV ファイルが生成されませんでした（BAN 疑い）" >> $GITHUB_STEP_SUMMARY
-          fi
+          ${{ steps.venv.outputs.python }} -m src.main status --site indeed | tee status.txt
+          {
+            echo "## Indeed 進捗"
+            echo '```'
+            cat status.txt
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload CSV as artifact
-        if: always()
+      - name: Export CSV (mode=export)
+        if: steps.mode.outputs.mode == 'export'
+        run: |
+          FILE="output/indeed-phone-${{ steps.mode.outputs.timestamp }}.csv"
+          ${{ steps.venv.outputs.python }} -m src.main export --site indeed --output "$FILE"
+          echo "csv=$FILE" >> $GITHUB_ENV
+
+      - name: Upload exported CSV
+        if: steps.mode.outputs.mode == 'export' && env.csv != ''
         uses: actions/upload-artifact@v4
         with:
-          name: indeed-scrape-${{ steps.params.outputs.timestamp }}
-          path: output/${{ steps.params.outputs.filename }}
-          if-no-files-found: warn
+          name: indeed-phone-${{ steps.mode.outputs.timestamp }}
+          path: ${{ env.csv }}
           retention-days: 30

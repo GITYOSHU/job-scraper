@@ -45,6 +45,10 @@ class ScrapingError(Exception):
     """スクレイピング処理中に発生したエラーの基底クラス。"""
 
 
+class BanDetectedError(Exception):
+    """403 が閾値回連続して観測された。上位で pause 状態に遷移する用。"""
+
+
 class IndeedScraper:
     """Indeed 求人ページのスクレイパー (Playwright ベース)。
 
@@ -66,13 +70,16 @@ class IndeedScraper:
         headless: bool = True,
         user_agent: str = DEFAULT_USER_AGENT,
         page_load_timeout_ms: int = 30_000,
+        ban_threshold: int = 3,
     ) -> None:
         self.request_delay_seconds = request_delay_seconds
         self.headless = headless
         self.user_agent = user_agent
         self.page_load_timeout_ms = page_load_timeout_ms
+        self.ban_threshold = ban_threshold
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
+        self._consecutive_403 = 0
 
     def __enter__(self) -> "IndeedScraper":
         self._playwright = sync_playwright().start()
@@ -127,9 +134,20 @@ class IndeedScraper:
                 return None
 
             status = response.status
+            if status == 403:
+                self._consecutive_403 += 1
+                logger.warning(
+                    f"HTTP 403 at {url} (consecutive_403={self._consecutive_403}/{self.ban_threshold})"
+                )
+                if self._consecutive_403 >= self.ban_threshold:
+                    raise BanDetectedError(
+                        f"HTTP 403 が {self.ban_threshold} 回連続。BAN 疑い。"
+                    )
+                return None
             if status >= 400:
                 logger.warning(f"HTTP {status} at {url}")
                 return None
+            self._consecutive_403 = 0
 
             try:
                 page.wait_for_load_state("networkidle", timeout=5_000)

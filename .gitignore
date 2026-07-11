@@ -63,6 +63,13 @@ output/
 *.csv
 !tests/fixtures/*.csv
 
+# --- SQLite 状態 ---
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # --- キャッシュ ---
 .mypy_cache/
 .ruff_cache/
