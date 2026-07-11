@@ -129,7 +129,8 @@ def _cmd_tick(args: argparse.Namespace, logger: logging.Logger) -> int:
         f"tick 完了: new={items_new} dup={items_dup} status={status} "
         f"total={counts['total']} with_phone={counts['with_phone']}"
     )
-    return 0 if status == "completed" else 1
+    # banned は想定内動作なので success 扱い (pause 中の後続 tick で skip される)
+    return 0 if status in ("completed", "banned") else 1
 
 
 def _cmd_status(args: argparse.Namespace, logger: logging.Logger) -> int:
