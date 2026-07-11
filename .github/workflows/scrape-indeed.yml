@@ -1,0 +1,113 @@
+name: Scrape Indeed
+
+on:
+  # 手動トリガー
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: '検索キーワード'
+        required: true
+        default: 'エンジニア'
+        type: string
+      location:
+        description: '勤務地（例: 東京）'
+        required: false
+        default: ''
+        type: string
+      max_pages:
+        description: '取得ページ数（1 ページ 15 件・BAN 回避のため小さめ推奨）'
+        required: true
+        default: '1'
+        type: string
+      request_delay_seconds:
+        description: 'リクエスト間隔秒（Indeed は 60 秒以上推奨）'
+        required: false
+        default: '60'
+        type: string
+
+# 同時実行を 1 個に制限
+concurrency:
+  group: scrape-indeed
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    # ⚠️ Indeed は GitHub の Azure IP を即 BAN する。
+    # 家庭用 IP を持つ self-hosted runner (家 Mac) でのみ実行する。
+    runs-on: [self-hosted, macOS, indeed-capable]
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Reuse local venv from /Users/yoshu/job-scraper
+        id: venv
+        run: |
+          LOCAL_VENV="/Users/yoshu/job-scraper/.venv"
+          if [ ! -d "$LOCAL_VENV" ]; then
+            echo "❌ ローカル venv が見つかりません: $LOCAL_VENV" >&2
+            exit 1
+          fi
+          echo "python=${LOCAL_VENV}/bin/python" >> "$GITHUB_OUTPUT"
+          echo "使用する Python: ${LOCAL_VENV}/bin/python"
+          ${LOCAL_VENV}/bin/python --version
+
+      - name: Verify dependencies (playwright / bs4 / dotenv)
+        run: |
+          ${{ steps.venv.outputs.python }} -c "import playwright; import bs4; import dotenv; print('deps OK')"
+
+      - name: Resolve run parameters
+        id: params
+        run: |
+          KEYWORD="${{ github.event.inputs.keyword || 'エンジニア' }}"
+          LOCATION="${{ github.event.inputs.location || '' }}"
+          MAX_PAGES="${{ github.event.inputs.max_pages || '1' }}"
+          DELAY="${{ github.event.inputs.request_delay_seconds || '60' }}"
+          TIMESTAMP=$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)
+          FILENAME="indeed-${TIMESTAMP}.csv"
+          echo "keyword=${KEYWORD}" >> "$GITHUB_OUTPUT"
+          echo "location=${LOCATION}" >> "$GITHUB_OUTPUT"
+          echo "max_pages=${MAX_PAGES}" >> "$GITHUB_OUTPUT"
+          echo "delay=${DELAY}" >> "$GITHUB_OUTPUT"
+          echo "filename=${FILENAME}" >> "$GITHUB_OUTPUT"
+          echo "timestamp=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
+
+      - name: Run scraper (Indeed via self-hosted / 家庭用 IP)
+        env:
+          REQUEST_DELAY_SECONDS: ${{ steps.params.outputs.delay }}
+          HEADLESS: 'true'
+          LOG_LEVEL: 'INFO'
+        run: |
+          ${{ steps.venv.outputs.python }} -m src.main \
+            --site indeed \
+            --keyword "${{ steps.params.outputs.keyword }}" \
+            --location "${{ steps.params.outputs.location }}" \
+            --max-pages ${{ steps.params.outputs.max_pages }} \
+            --filename "${{ steps.params.outputs.filename }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          FILE="output/${{ steps.params.outputs.filename }}"
+          if [ -f "$FILE" ]; then
+            LINES=$(wc -l < "$FILE")
+            echo "## Indeed スクレイピング完了" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- キーワード: ${{ steps.params.outputs.keyword }}" >> $GITHUB_STEP_SUMMARY
+            echo "- 勤務地: ${{ steps.params.outputs.location }}" >> $GITHUB_STEP_SUMMARY
+            echo "- ページ数: ${{ steps.params.outputs.max_pages }}" >> $GITHUB_STEP_SUMMARY
+            echo "- 待機秒: ${{ steps.params.outputs.delay }}" >> $GITHUB_STEP_SUMMARY
+            echo "- 行数 (ヘッダー含む): $LINES" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ CSV ファイルが生成されませんでした（BAN 疑い）" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload CSV as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: indeed-scrape-${{ steps.params.outputs.timestamp }}
+          path: output/${{ steps.params.outputs.filename }}
+          if-no-files-found: warn
+          retention-days: 30
