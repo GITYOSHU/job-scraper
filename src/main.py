@@ -101,6 +101,12 @@ def _cmd_tick(args: argparse.Namespace, logger: logging.Logger) -> int:
         return 0
 
     pool = indeed_query_pool() if site == "indeed" else hellowork_query_pool()
+    # shard filter: round-robin で pool を分割
+    if args.total_shards > 1:
+        pool = [q for i, q in enumerate(pool) if i % args.total_shards == args.shard]
+        logger.info(
+            f"shard={args.shard}/{args.total_shards} で {len(pool)} クエリを担当"
+        )
     headless = os.getenv("HEADLESS", "true").lower() == "true"
     delay = float(os.getenv("REQUEST_DELAY_SECONDS", "60" if site == "indeed" else "3"))
     queries_per_tick = int(os.getenv("QUERIES_PER_TICK", "10"))
@@ -186,11 +192,37 @@ def _cmd_status(args: argparse.Namespace, logger: logging.Logger) -> int:
 
 
 def _cmd_export(args: argparse.Namespace, logger: logging.Logger) -> int:
-    store = StateStore()
-    postings = store.export_with_phone(args.site)
-    logger.info(f"電話番号あり {len(postings)} 件を CSV に書き出します。")
+    """電話番号あり求人を CSV に書き出す。
 
+    --all-shards が指定されている場合、data/state-shard-*.db 全てを読み込み、
+    job_url で UNION (最新の scraped_at 優先) して出力する。
+    """
     output_path = Path(args.output)
+
+    if getattr(args, "all_shards", False):
+        shard_dbs = sorted(Path("data").glob("state-shard-*.db"))
+        if not shard_dbs:
+            logger.warning("state-shard-*.db が見つかりません。デフォルト state.db にフォールバック")
+            store = StateStore()
+            postings = store.export_with_phone(args.site)
+        else:
+            logger.info(f"{len(shard_dbs)} 個の shard DB を merge: {[p.name for p in shard_dbs]}")
+            by_url: dict[str, object] = {}
+            for db_path in shard_dbs:
+                shard_store = StateStore(db_path=db_path)
+                for posting in shard_store.export_with_phone(args.site):
+                    existing = by_url.get(posting.job_url)
+                    if existing is None or (
+                        (posting.scraped_at or "") > (existing.scraped_at or "")
+                    ):
+                        by_url[posting.job_url] = posting
+            postings = list(by_url.values())
+            postings.sort(key=lambda p: p.scraped_at or "", reverse=True)
+    else:
+        store = StateStore()
+        postings = store.export_with_phone(args.site)
+
+    logger.info(f"電話番号あり {len(postings)} 件を CSV に書き出します。")
     writer = CsvWriter(output_dir=output_path.parent, filename=output_path.name)
     path, written = writer.write(postings)
     print(f"完了: {written} 件を書き出しました → {path}")
@@ -339,6 +371,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tick = sub.add_parser("tick", help="自動巡回 1 tick（SQLite dedup）")
     p_tick.add_argument("--site", choices=["hellowork", "indeed"], default="indeed")
     p_tick.add_argument("--max-pages", type=int, default=1)
+    p_tick.add_argument(
+        "--shard",
+        type=int,
+        default=0,
+        help="matrix 並列用 shard 番号 (0-indexed)",
+    )
+    p_tick.add_argument(
+        "--total-shards",
+        type=int,
+        default=1,
+        help="matrix 並列時の総 shard 数",
+    )
 
     # status
     p_status = sub.add_parser("status", help="進捗確認")
@@ -348,6 +392,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_export = sub.add_parser("export", help="電話番号あり求人を CSV エクスポート")
     p_export.add_argument("--site", choices=["hellowork", "indeed"], default="indeed")
     p_export.add_argument("--output", required=True)
+    p_export.add_argument(
+        "--all-shards",
+        action="store_true",
+        help="data/state-shard-*.db を全て merge して出力",
+    )
 
     # validate (Bright Data 疎通 + 電話率実測)
     p_validate = sub.add_parser(

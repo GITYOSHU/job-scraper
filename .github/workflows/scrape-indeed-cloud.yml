@@ -1,7 +1,7 @@
 name: Scrape Indeed (Cloud via Bright Data)
 
 on:
-  # 30 分ごとに自動 tick (validate で電話率 95% 実測を受けて本番化)
+  # 30 分ごとに自動 tick (matrix 5 shard 並列)
   schedule:
     - cron: '*/30 * * * *'
 
@@ -20,12 +20,12 @@ on:
       max_pages:
         description: 'tick 内の 1 検索クエリあたり取得ページ数'
         required: false
-        default: '5'
+        default: '3'
         type: string
       request_delay_seconds:
-        description: 'リクエスト間隔秒 (proxy 経由なら 3-5 秒で十分)'
+        description: 'リクエスト間隔秒'
         required: false
-        default: '3'
+        default: '2'
         type: string
       samples:
         description: 'validate モード時のサンプル件数'
@@ -33,34 +33,40 @@ on:
         default: '100'
         type: string
 
-# 同時実行 1 個
+# schedule fire を連続実行 (matrix 内では並列)
+# concurrency は matrix ごとに独立させたいので shard 番号を含める
 concurrency:
   group: scrape-indeed-cloud
   cancel-in-progress: false
 
 jobs:
   scrape:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
     env:
-      # Bright Data Web Unlocker proxy URL (Secret から注入)
       BRIGHTDATA_PROXY_URL: ${{ secrets.BRIGHTDATA_PROXY_URL }}
-      # SQLite DB は checkout workspace 内 (GitHub Cloud は都度 fresh なので Artifact で永続化)
-      STATE_DB: data/state.db
-      REQUEST_DELAY_SECONDS: ${{ github.event.inputs.request_delay_seconds || '3' }}
+      # shard 毎に独立した SQLite DB
+      STATE_DB: data/state-shard-${{ matrix.shard }}.db
+      REQUEST_DELAY_SECONDS: ${{ github.event.inputs.request_delay_seconds || '2' }}
       HEADLESS: 'true'
       LOG_LEVEL: 'INFO'
       BAN_PAUSE_SECONDS: '1800'
-      # 1 tick 内で回すクエリ数 (keyword × location の組を N 個連続実行)
       QUERIES_PER_TICK: '10'
+      SHARD_INDEX: ${{ matrix.shard }}
+      TOTAL_SHARDS: '5'
+      ARTIFACT_NAME: indeed-state-shard-${{ matrix.shard }}
 
     steps:
       - name: Fail fast if secret missing
         run: |
           if [ -z "${{ env.BRIGHTDATA_PROXY_URL }}" ]; then
             echo "❌ BRIGHTDATA_PROXY_URL secret が未設定です。" >&2
-            echo "Settings → Secrets → Actions で登録してください。" >&2
             exit 1
           fi
 
@@ -81,26 +87,24 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install --with-deps chromium
 
-      # SQLite DB を過去 run の Artifact から復元
-      # actions/download-artifact@v4 は同一 run 内のみ対象なので gh CLI を使う
-      - name: Download previous state
+      - name: Download previous state (shard specific)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p data
-          echo "指定 artifact 名 = indeed-state-db"
-          # 有効期限内で最新の同名 artifact を探す
-          ARTIFACT_JSON=$(gh api "/repos/${{ github.repository }}/actions/artifacts?name=indeed-state-db&per_page=100" \
+          ARTIFACT_NAME="${{ env.ARTIFACT_NAME }}"
+          echo "指定 artifact 名 = $ARTIFACT_NAME"
+          ARTIFACT_JSON=$(gh api "/repos/${{ github.repository }}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=100" \
             --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0]')
           if [ -z "$ARTIFACT_JSON" ] || [ "$ARTIFACT_JSON" = "null" ]; then
-            echo "過去 artifact なし: 空の state.db で開始"
+            echo "shard ${{ matrix.shard }} の過去 artifact なし: 空の state.db で開始"
             exit 0
           fi
           PRIOR_RUN_ID=$(echo "$ARTIFACT_JSON" | jq -r '.workflow_run.id')
           echo "復元元 run_id=$PRIOR_RUN_ID"
           gh run download "$PRIOR_RUN_ID" \
             --repo "${{ github.repository }}" \
-            -n indeed-state-db \
+            -n "$ARTIFACT_NAME" \
             -D data \
             || echo "download 失敗: 空で開始"
           ls -la data/
@@ -109,7 +113,7 @@ jobs:
         id: mode
         run: |
           MODE="${{ github.event.inputs.mode || 'tick' }}"
-          MAX_PAGES="${{ github.event.inputs.max_pages || '5' }}"
+          MAX_PAGES="${{ github.event.inputs.max_pages || '3' }}"
           SAMPLES="${{ github.event.inputs.samples || '100' }}"
           TIMESTAMP=$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)
           echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
@@ -122,7 +126,9 @@ jobs:
         run: |
           python -m src.main tick \
             --site indeed \
-            --max-pages ${{ steps.mode.outputs.max_pages }}
+            --max-pages ${{ steps.mode.outputs.max_pages }} \
+            --shard ${{ matrix.shard }} \
+            --total-shards ${{ env.TOTAL_SHARDS }}
 
       - name: Run validate
         if: steps.mode.outputs.mode == 'validate'
@@ -136,33 +142,77 @@ jobs:
         run: |
           python -m src.main status --site indeed | tee status.txt
           {
-            echo "## Indeed 進捗"
+            echo "## Indeed shard ${{ matrix.shard }} 進捗"
             echo '```'
             cat status.txt
             echo '```'
           } >> $GITHUB_STEP_SUMMARY
 
-      - name: Export CSV (mode=export)
-        if: steps.mode.outputs.mode == 'export'
-        run: |
-          FILE="output/indeed-phone-${{ steps.mode.outputs.timestamp }}.csv"
-          python -m src.main export --site indeed --output "$FILE"
-          echo "csv=$FILE" >> $GITHUB_ENV
-
-      - name: Upload exported CSV
-        if: steps.mode.outputs.mode == 'export' && env.csv != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: indeed-phone-${{ steps.mode.outputs.timestamp }}
-          path: ${{ env.csv }}
-          retention-days: 30
-
-      # 常に SQLite DB を上書き Artifact として保存 (次回 tick で復元)
-      - name: Upload state DB
+      - name: Upload state DB (shard specific)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: indeed-state-db
-          path: data/state.db
+          name: ${{ env.ARTIFACT_NAME }}
+          path: data/state-shard-${{ matrix.shard }}.db
           retention-days: 30
           overwrite: true
+
+  # 全 shard 完了後に export merge を実行する集約 job (mode=export 時のみ)
+  export-merged:
+    needs: scrape
+    if: github.event.inputs.mode == 'export'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download all shard state artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: indeed-state-shard-*
+          path: data
+          merge-multiple: true
+
+      - name: Resolve params
+        id: params
+        run: |
+          TIMESTAMP=$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)
+          echo "timestamp=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
+
+      - name: Merge shards and export CSV
+        run: |
+          FILE="output/indeed-phone-${{ steps.params.outputs.timestamp }}.csv"
+          python -m src.main export --site indeed --output "$FILE" --all-shards
+          echo "csv=$FILE" >> $GITHUB_ENV
+
+      - name: Upload merged CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: indeed-phone-merged-${{ steps.params.outputs.timestamp }}
+          path: ${{ env.csv }}
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          FILE="output/indeed-phone-${{ steps.params.outputs.timestamp }}.csv"
+          if [ -f "$FILE" ]; then
+            LINES=$(wc -l < "$FILE")
+            HEAD_LINE=$(tail -n +2 "$FILE" | wc -l)
+            {
+              echo "## Indeed 電話番号あり CSV (全 shard merge)"
+              echo "- 総行数: $LINES (ヘッダー含む)"
+              echo "- レコード数: $HEAD_LINE"
+              echo "- ファイル: \`$FILE\`"
+            } >> $GITHUB_STEP_SUMMARY
+          fi
