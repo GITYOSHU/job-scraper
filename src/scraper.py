@@ -94,12 +94,17 @@ class IndeedScraper:
 
     def __enter__(self) -> "IndeedScraper":
         self._playwright = sync_playwright().start()
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+        ]
+        # Bright Data の HTTPS proxy port (33335) は self-signed cert なので
+        # proxy 使用時は cert error を無視する
+        if self.proxy:
+            launch_args.append("--ignore-certificate-errors")
         self._browser = self._playwright.chromium.launch(
             headless=self.headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-            ],
+            args=launch_args,
         )
         return self
 
