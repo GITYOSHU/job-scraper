@@ -209,23 +209,31 @@ class IndeedScraper:
     def _extract_job_urls(self, html: str) -> Iterator[str]:
         """検索結果 HTML から求人詳細ページの URL を抽出。
 
-        NOTE: Indeed の HTML 構造は頻繁に変更されるため、
-        実行時に動作しなくなった場合はセレクタを見直すこと。
+        /pagead/clk (広告リダイレクタ) は複数リダイレクトで proxy 経由だと
+        タイムアウトが多発するので除外する。
+        /viewjob?jk=xxx (実 URL) と /rc/clk (通常クリック) のみ拾う。
         """
         soup = BeautifulSoup(html, "lxml")
         seen: set[str] = set()
-        selectors = [
-            "a[href*='/rc/clk']",
+
+        # anchor 要素の候補セレクタ
+        anchor_selectors = [
             "a[href*='/viewjob']",
+            "a[href*='/rc/clk']",
             "a.jcs-JobTitle",
             "h2.jobTitle a",
         ]
-        for sel in selectors:
+        for sel in anchor_selectors:
             for anchor in soup.select(sel):
                 href = anchor.get("href", "")
                 if not href:
                     continue
+                if "/pagead/clk" in href:
+                    # 広告リダイレクタは除外
+                    continue
                 full_url = urljoin(INDEED_BASE_URL, href)
+                if "/pagead/" in full_url:
+                    continue
                 if full_url in seen:
                     continue
                 seen.add(full_url)
