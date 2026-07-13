@@ -79,8 +79,18 @@ INDEED_LOCATIONS: list[str] = [
 
 
 def indeed_query_pool() -> list[tuple[str, str]]:
-    """全キーワード × 全地域の直積を返す (キーワード, 地域)。"""
-    return [(kw, loc) for kw in INDEED_KEYWORDS for loc in INDEED_LOCATIONS]
+    """全キーワード × 全地域の直積を返す (キーワード, 地域)。
+
+    順序: **location-first で外側ループ、keyword-first で内側ループ**。
+    これにより pick_next_query の tie-break で 未実行クエリを取る際、
+    最初の 40 tick は東京の全キーワードを回る (異なる求人領域を広く探索)。
+
+    悪い順序 (旧): (アルバイト,東京) → (アルバイト,大阪) → ... → (アルバイト,松山) → (パート,東京)
+        → 20 tick で同じキーワード → キーワードが枯渇するまで keyword 変化しない
+    良い順序 (新): (アルバイト,東京) → (パート,東京) → (飲食,東京) → ... → (Web,東京) → (アルバイト,大阪)
+        → 40 tick で全キーワード網羅 → キーワード多様性で URL 枯渇回避
+    """
+    return [(kw, loc) for loc in INDEED_LOCATIONS for kw in INDEED_KEYWORDS]
 
 
 HELLOWORK_KEYWORDS: list[str] = [
