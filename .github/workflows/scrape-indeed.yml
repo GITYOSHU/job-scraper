@@ -1,9 +1,10 @@
 name: Scrape Indeed
 
 on:
-  # 30 分ごとに自動 tick
-  schedule:
-    - cron: '*/30 * * * *'
+  # 【schedule 一時停止】self-hosted runner は Cloud 版が本番稼働するまで手動のみ
+  # 再開する時は以下 schedule ブロックのコメントを外す:
+  # schedule:
+  #   - cron: '*/30 * * * *'
 
   # 手動トリガー
   workflow_dispatch:

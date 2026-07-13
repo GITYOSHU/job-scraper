@@ -1,9 +1,10 @@
 name: Scrape Indeed (Cloud via Bright Data)
 
 on:
-  # 高頻度 tick を GitHub Cloud runner + Bright Data proxy で回す
-  schedule:
-    - cron: '*/15 * * * *'  # 15 分毎
+  # 【schedule 一時停止】validate 完了 + Bright Data 費用管理体制ができるまで手動のみ
+  # 再開する時は以下 schedule ブロックのコメントを外す:
+  # schedule:
+  #   - cron: '*/15 * * * *'  # 15 分毎
 
   workflow_dispatch:
     inputs:

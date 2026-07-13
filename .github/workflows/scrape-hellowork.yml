@@ -20,9 +20,9 @@ on:
         default: '3'
         type: string
 
-  # 定期実行（毎日 JST 9:00 = UTC 0:00）
-  schedule:
-    - cron: '0 0 * * *'
+  # 【schedule 一時停止】
+  # schedule:
+  #   - cron: '0 0 * * *'
 
 # 同時実行を 1 個に制限（重複実行防止）
 concurrency:
