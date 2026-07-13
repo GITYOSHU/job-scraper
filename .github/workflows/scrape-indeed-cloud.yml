@@ -79,16 +79,29 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install --with-deps chromium
 
-      # SQLite DB を Artifact 越しに前回状態から復元
+      # SQLite DB を過去 run の Artifact から復元
+      # actions/download-artifact@v4 は同一 run 内のみ対象なので gh CLI を使う
       - name: Download previous state
-        uses: actions/download-artifact@v4
-        with:
-          name: indeed-state-db
-          path: data
-        continue-on-error: true
-
-      - name: Ensure data dir
-        run: mkdir -p data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data
+          echo "指定 artifact 名 = indeed-state-db"
+          # 有効期限内で最新の同名 artifact を探す
+          ARTIFACT_JSON=$(gh api "/repos/${{ github.repository }}/actions/artifacts?name=indeed-state-db&per_page=100" \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0]')
+          if [ -z "$ARTIFACT_JSON" ] || [ "$ARTIFACT_JSON" = "null" ]; then
+            echo "過去 artifact なし: 空の state.db で開始"
+            exit 0
+          fi
+          PRIOR_RUN_ID=$(echo "$ARTIFACT_JSON" | jq -r '.workflow_run.id')
+          echo "復元元 run_id=$PRIOR_RUN_ID"
+          gh run download "$PRIOR_RUN_ID" \
+            --repo "${{ github.repository }}" \
+            -n indeed-state-db \
+            -D data \
+            || echo "download 失敗: 空で開始"
+          ls -la data/
 
       - name: Resolve mode
         id: mode
