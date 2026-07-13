@@ -52,6 +52,8 @@ jobs:
       HEADLESS: 'true'
       LOG_LEVEL: 'INFO'
       BAN_PAUSE_SECONDS: '1800'
+      # 1 tick 内で回すクエリ数 (keyword × location の組を N 個連続実行)
+      QUERIES_PER_TICK: '10'
 
     steps:
       - name: Fail fast if secret missing

@@ -88,7 +88,11 @@ def _cmd_scrape(args: argparse.Namespace, logger: logging.Logger) -> int:
 
 
 def _cmd_tick(args: argparse.Namespace, logger: logging.Logger) -> int:
-    """1 tick: 未実行 or 最古の (keyword, location) を選んで scrape、SQLite に保存。"""
+    """1 tick で N クエリ連続実行 (Playwright browser は使い回し)。
+
+    QUERIES_PER_TICK env で 1 tick あたりのクエリ数を制御。デフォルト 10。
+    BAN 検知時は即中断・pause 遷移。
+    """
     store = StateStore()
     site = args.site
 
@@ -97,44 +101,67 @@ def _cmd_tick(args: argparse.Namespace, logger: logging.Logger) -> int:
         return 0
 
     pool = indeed_query_pool() if site == "indeed" else hellowork_query_pool()
-    keyword, location = store.pick_next_query(site, pool)
-    logger.info(f"tick 開始: site={site} keyword='{keyword}' location='{location}'")
-
-    run_id = store.start_run(site, keyword, location)
     headless = os.getenv("HEADLESS", "true").lower() == "true"
     delay = float(os.getenv("REQUEST_DELAY_SECONDS", "60" if site == "indeed" else "3"))
+    queries_per_tick = int(os.getenv("QUERIES_PER_TICK", "10"))
 
-    items_new = 0
-    items_dup = 0
-    status = "completed"
+    total_new = 0
+    total_dup = 0
+    tick_status = "completed"
+
+    logger.info(f"tick 開始: site={site} queries_per_tick={queries_per_tick}")
 
     try:
         with _make_scraper(site, delay, headless) as scraper:
-            for posting in scraper.search(
-                keyword=keyword, location=location, max_pages=args.max_pages
-            ):
-                if store.save_posting(posting, site, keyword, location):
-                    items_new += 1
-                else:
-                    items_dup += 1
-    except BanDetectedError as e:
-        logger.error(f"BAN 検知: {e}")
-        pause_sec = int(os.getenv("BAN_PAUSE_SECONDS", "3600"))
-        store.set_pause(site, pause_sec, reason=str(e))
-        status = "banned"
+            for q_index in range(queries_per_tick):
+                if store.is_paused(site):
+                    logger.warning(f"tick 中に pause 検知 ({q_index}/{queries_per_tick} で中断)")
+                    break
+
+                keyword, location = store.pick_next_query(site, pool)
+                logger.info(
+                    f"query {q_index + 1}/{queries_per_tick}: "
+                    f"keyword='{keyword}' location='{location}'"
+                )
+                run_id = store.start_run(site, keyword, location)
+                items_new = 0
+                items_dup = 0
+                query_status = "completed"
+
+                try:
+                    for posting in scraper.search(
+                        keyword=keyword, location=location, max_pages=args.max_pages
+                    ):
+                        if store.save_posting(posting, site, keyword, location):
+                            items_new += 1
+                        else:
+                            items_dup += 1
+                except BanDetectedError as e:
+                    logger.error(f"BAN 検知 (query {q_index + 1}): {e}")
+                    pause_sec = int(os.getenv("BAN_PAUSE_SECONDS", "3600"))
+                    store.set_pause(site, pause_sec, reason=str(e))
+                    query_status = "banned"
+                    tick_status = "banned"
+                except Exception as e:
+                    logger.exception(f"query {q_index + 1} 中エラー: {e}")
+                    query_status = "error"
+                finally:
+                    store.finish_run(run_id, items_new, items_dup, status=query_status)
+                    total_new += items_new
+                    total_dup += items_dup
+
+                if query_status == "banned":
+                    break
     except Exception as e:
-        logger.exception(f"tick 中エラー: {e}")
-        status = "error"
-    finally:
-        store.finish_run(run_id, items_new, items_dup, status=status)
+        logger.exception(f"tick 中の scraper エラー: {e}")
+        tick_status = "error"
 
     counts = store.counts(site)
     logger.info(
-        f"tick 完了: new={items_new} dup={items_dup} status={status} "
+        f"tick 完了: new={total_new} dup={total_dup} status={tick_status} "
         f"total={counts['total']} with_phone={counts['with_phone']}"
     )
-    # banned は想定内動作なので success 扱い (pause 中の後続 tick で skip される)
-    return 0 if status in ("completed", "banned") else 1
+    return 0 if tick_status in ("completed", "banned") else 1
 
 
 def _cmd_status(args: argparse.Namespace, logger: logging.Logger) -> int:
