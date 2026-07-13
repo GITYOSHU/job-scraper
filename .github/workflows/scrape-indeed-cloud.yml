@@ -1,10 +1,9 @@
 name: Scrape Indeed (Cloud via Bright Data)
 
 on:
-  # 【schedule 一時停止】validate 完了 + Bright Data 費用管理体制ができるまで手動のみ
-  # 再開する時は以下 schedule ブロックのコメントを外す:
-  # schedule:
-  #   - cron: '*/15 * * * *'  # 15 分毎
+  # 30 分ごとに自動 tick (validate で電話率 95% 実測を受けて本番化)
+  schedule:
+    - cron: '*/30 * * * *'
 
   workflow_dispatch:
     inputs:
@@ -21,7 +20,7 @@ on:
       max_pages:
         description: 'tick 内の 1 検索クエリあたり取得ページ数'
         required: false
-        default: '2'
+        default: '5'
         type: string
       request_delay_seconds:
         description: 'リクエスト間隔秒 (proxy 経由なら 3-5 秒で十分)'
@@ -95,7 +94,7 @@ jobs:
         id: mode
         run: |
           MODE="${{ github.event.inputs.mode || 'tick' }}"
-          MAX_PAGES="${{ github.event.inputs.max_pages || '2' }}"
+          MAX_PAGES="${{ github.event.inputs.max_pages || '5' }}"
           SAMPLES="${{ github.event.inputs.samples || '100' }}"
           TIMESTAMP=$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)
           echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
