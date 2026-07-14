@@ -181,7 +181,12 @@ class IndeedScraper:
         location: str = "",
         max_pages: int = 1,
     ) -> Iterator[JobPosting]:
-        """検索結果ページを巡回して求人を yield する。"""
+        """検索結果ページを巡回して求人を yield する。
+
+        連続 2 ページで取得失敗した場合、そのクエリは死んでいると判断して abort する
+        (地域名不正・Indeed 側の一時異常等で丸ごと 90 秒 x 3 待たされる問題の回避)。
+        """
+        consecutive_search_fail = 0
         for page_index in range(max_pages):
             params = {"q": keyword, "l": location, "start": page_index * 10}
             search_url = f"{INDEED_BASE_URL}/jobs?{urlencode(params)}"
@@ -189,9 +194,19 @@ class IndeedScraper:
 
             html = self._fetch_html(search_url)
             if html is None:
-                logger.warning(f"検索ページ取得失敗 page={page_index}")
+                consecutive_search_fail += 1
+                logger.warning(
+                    f"検索ページ取得失敗 page={page_index} "
+                    f"(consecutive_fail={consecutive_search_fail})"
+                )
+                if consecutive_search_fail >= 2:
+                    logger.warning(
+                        f"連続失敗のためクエリ '{keyword} @ {location}' を打ち切り"
+                    )
+                    return
                 continue
 
+            consecutive_search_fail = 0
             job_urls = list(self._extract_job_urls(html))
             logger.info(f"page={page_index + 1}: {len(job_urls)} 件の求人 URL を検出")
 
