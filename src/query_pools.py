@@ -55,6 +55,9 @@ INDEED_KEYWORDS: list[str] = [
 ]
 
 INDEED_LOCATIONS: list[str] = [
+    # 全国検索 (location 空) と大都市のみに限定
+    # 地方名で Bright Data proxy 経由の Indeed 検索が全 timeout する問題を回避
+    "",
     "東京",
     "大阪",
     "名古屋",
@@ -65,16 +68,6 @@ INDEED_LOCATIONS: list[str] = [
     "京都",
     "横浜",
     "神戸",
-    "埼玉",
-    "千葉",
-    "北九州",
-    "静岡",
-    "岡山",
-    "熊本",
-    "新潟",
-    "金沢",
-    "宇都宮",
-    "松山",
 ]
 
 
