@@ -69,7 +69,7 @@ class IndeedScraper:
         request_delay_seconds: float = 3.0,
         headless: bool = True,
         user_agent: str = DEFAULT_USER_AGENT,
-        page_load_timeout_ms: int = 30_000,
+        page_load_timeout_ms: int = 90_000,
         ban_threshold: int = 3,
         proxy: Optional[dict] = None,
     ) -> None:
