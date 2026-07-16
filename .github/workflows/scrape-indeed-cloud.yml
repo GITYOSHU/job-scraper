@@ -44,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 
     runs-on: ubuntu-latest
     timeout-minutes: 240
@@ -57,9 +57,9 @@ jobs:
       HEADLESS: 'true'
       LOG_LEVEL: 'INFO'
       BAN_PAUSE_SECONDS: '1800'
-      QUERIES_PER_TICK: '10'
+      QUERIES_PER_TICK: '20'
       SHARD_INDEX: ${{ matrix.shard }}
-      TOTAL_SHARDS: '8'
+      TOTAL_SHARDS: '20'
       ARTIFACT_NAME: indeed-state-shard-${{ matrix.shard }}
 
     steps:
