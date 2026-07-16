@@ -20,7 +20,7 @@ on:
       max_pages:
         description: 'tick 内の 1 検索クエリあたり取得ページ数'
         required: false
-        default: '3'
+        default: '10'
         type: string
       request_delay_seconds:
         description: 'リクエスト間隔秒'
@@ -113,7 +113,7 @@ jobs:
         id: mode
         run: |
           MODE="${{ github.event.inputs.mode || 'tick' }}"
-          MAX_PAGES="${{ github.event.inputs.max_pages || '3' }}"
+          MAX_PAGES="${{ github.event.inputs.max_pages || '10' }}"
           SAMPLES="${{ github.event.inputs.samples || '100' }}"
           TIMESTAMP=$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)
           echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
