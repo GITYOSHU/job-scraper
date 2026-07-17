@@ -104,12 +104,15 @@ class ApifyIndeedScraper:
                 yield posting
 
     def _build_input(self, keyword: str, location: str, max_items: int) -> dict:
+        # parseCompanyDetails=True で企業ページも取得 → description が長くなり
+        # 電話番号 regex 命中率が上がる (実測 21% → 60-80% 期待)
+        # コストは 1.5-2 倍だが 電話番号率 向上で record 単位効率が上がる
         return {
             "position": keyword,
             "country": self.country,
             "location": location,
             "maxItemsPerSearch": max_items,
-            "parseCompanyDetails": False,
+            "parseCompanyDetails": True,
             "saveOnlyUniqueItems": True,
             "followApplyRedirects": False,
         }
@@ -152,24 +155,27 @@ class ApifyIndeedScraper:
     def _to_posting(self, item: dict) -> Optional[JobPosting]:
         """Apify actor JSON → JobPosting 変換。
 
-        electronics/description に電話番号あれば regex 抽出。
+        parseCompanyDetails=True の場合、以下から順に電話番号抽出:
+        1. description text (求人本文)
+        2. companyInfo / companyDetails 系フィールド (企業情報 - Apify actor 提供)
+        3. descriptionHTML (念のため HTML からも)
         """
         url = item.get("url")
         company = item.get("company")
         if not url or not company:
             return None
 
-        description_text = item.get("description") or ""
-        # descriptionHTML から抽出することもあるが text が信頼できる
-        phone = extract_phone_number(description_text)
+        # 電話番号抽出: 複数ソースを順に試す
+        phone = self._extract_phone_from_item(item)
 
         location_str = item.get("location") or ""
-        # Apify の location は "Tokyo, Japan" 形式。都道府県レベルまで
         address = location_str or None
 
-        # industry は actor 側で jobType[] を持つ場合あり
         job_types = item.get("jobType") or []
         industry = ", ".join(job_types) if job_types else None
+
+        # 代表者名: 企業情報から取れる場合
+        rep_name = self._extract_rep_name(item)
 
         return JobPosting(
             company_name=company,
@@ -177,6 +183,69 @@ class ApifyIndeedScraper:
             address=address,
             phone_number=phone,
             industry=industry,
-            representative_name=None,  # Indeed 側に無い
+            representative_name=rep_name,
             scraped_at=item.get("scrapedAt") or datetime.now(JST).isoformat(timespec="seconds"),
         )
+
+    @staticmethod
+    def _extract_phone_from_item(item: dict) -> Optional[str]:
+        """Apify item から電話番号を段階的に抽出。
+
+        優先順位:
+        1. description (求人本文)
+        2. companyInfo / companyDescription / aboutCompany (parseCompanyDetails 時)
+        3. descriptionHTML (HTML 内のテキスト)
+        """
+        # 1. description
+        description = item.get("description") or ""
+        phone = extract_phone_number(description)
+        if phone:
+            return phone
+
+        # 2. 企業情報系のフィールド (Apify actor のバージョンによって名前異なる)
+        company_fields = [
+            "companyInfo",
+            "companyDescription",
+            "aboutCompany",
+            "companyDetails",
+            "companyAbout",
+        ]
+        for key in company_fields:
+            val = item.get(key)
+            if val:
+                if isinstance(val, dict):
+                    # dict の場合は各値を試す
+                    for v in val.values():
+                        if isinstance(v, str):
+                            phone = extract_phone_number(v)
+                            if phone:
+                                return phone
+                elif isinstance(val, str):
+                    phone = extract_phone_number(val)
+                    if phone:
+                        return phone
+
+        # 3. HTML 版本文 (念のため)
+        description_html = item.get("descriptionHTML") or ""
+        if description_html:
+            phone = extract_phone_number(description_html)
+            if phone:
+                return phone
+
+        return None
+
+    @staticmethod
+    def _extract_rep_name(item: dict) -> Optional[str]:
+        """企業情報から代表者名を抽出 (取得可能な場合のみ)。"""
+        for key in ["ceo", "representative", "president", "companyRepresentative"]:
+            val = item.get(key)
+            if val and isinstance(val, str):
+                return val
+        # companyInfo dict からも探す
+        info = item.get("companyInfo")
+        if isinstance(info, dict):
+            for k in ["ceo", "representative", "president"]:
+                v = info.get(k)
+                if v and isinstance(v, str):
+                    return v
+        return None
