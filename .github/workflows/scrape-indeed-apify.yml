@@ -46,6 +46,10 @@ jobs:
       SHARD_INDEX: ${{ matrix.shard }}
       TOTAL_SHARDS: '10'
       ARTIFACT_NAME: indeed-state-shard-${{ matrix.shard }}
+      # 電話高カテゴリのみに絞る (60 kw × 52 loc = 3,120 pool)
+      PHONE_FOCUSED_ONLY: 'true'
+      # 電話番号無し求人は SQLite に保存しない (電話率 100% CSV)
+      REQUIRE_PHONE: 'true'
 
     steps:
       - name: Fail fast if secret missing

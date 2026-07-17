@@ -106,8 +106,15 @@ class StateStore:
         site: str,
         keyword: str,
         location: str,
+        require_phone: bool = False,
     ) -> bool:
-        """新規求人を保存。既存 URL は False を返す。"""
+        """新規求人を保存。既存 URL は False を返す。
+
+        require_phone=True の場合、電話番号が無い求人は保存せず False を返す
+        (dedup + 電話番号ありのみ保存)。
+        """
+        if require_phone and not posting.phone_number:
+            return False
         try:
             with self._conn() as c:
                 c.execute(

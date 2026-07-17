@@ -1,9 +1,15 @@
 """検索キーワード / 地域のカタログ。
 
 電話番号掲載率が高そうなカテゴリ (パート・アルバイト・サービス業) を優先。
+
+PHONE_FOCUSED_ONLY 環境変数で 電話率高いカテゴリのみに絞る mode 有効化。
+- 個人経営店 / 家族経営店 / 中小 建設飲食系
+- 電話率 実測 40-70% 期待 (通常 25%)
 """
 
 from __future__ import annotations
+
+import os
 
 # 電話応募が多いカテゴリを優先配置
 INDEED_KEYWORDS: list[str] = [
@@ -284,19 +290,83 @@ INDEED_LOCATIONS: list[str] = [
 ]
 
 
+# 電話番号掲載率が高い キーワード (個人経営・家族経営・中小 が多い)
+# 実測ベース: 通常キーワード電話率 25% に対し これらは 40-70% を期待
+PHONE_FOCUSED_KEYWORDS: list[str] = [
+    # 個人経営美容系
+    "美容師",
+    "理容師",
+    "エステ",
+    "ネイリスト",
+    "整体",
+    "鍼灸",
+    "マッサージ",
+    "アロマ",
+    "柔道整復",
+    # 小規模飲食
+    "居酒屋",
+    "スナック",
+    "バー",
+    "ラーメン店",
+    "カフェ",
+    "そば",
+    "うどん",
+    "焼肉",
+    "寿司",
+    "回転寿司",
+    "ケーキ",
+    "パティシエ",
+    "ベーカリー",
+    # 地域密着
+    "タクシー",
+    "訪問介護",
+    "訪問看護",
+    "介護",
+    "看護助手",
+    "保育",
+    "動物病院",
+    # 中小 建設工事
+    "電気工事",
+    "塗装",
+    "内装",
+    "型枠",
+    "溶接",
+    "配管工",
+    "鉄筋",
+    "左官",
+    "解体",
+    "造園",
+    "リフォーム",
+    "自動車整備",
+    # 娯楽・小売
+    "パチンコ",
+    "カラオケ",
+    "ホストクラブ",
+    "キャバクラ",
+    "ガソリンスタンド",
+    "コインパーキング",
+    # その他 電話応募多
+    "警備員",
+    "巡回警備",
+    "施設警備",
+    "配達",
+    "ドライバー",
+    "運送",
+    "清掃",
+    "清掃員",
+    "ビルメンテナンス",
+]
+
+
 def indeed_query_pool() -> list[tuple[str, str]]:
     """全キーワード × 全地域の直積を返す (キーワード, 地域)。
 
-    順序: **location-first で外側ループ、keyword-first で内側ループ**。
-    これにより pick_next_query の tie-break で 未実行クエリを取る際、
-    最初の 40 tick は東京の全キーワードを回る (異なる求人領域を広く探索)。
-
-    悪い順序 (旧): (アルバイト,東京) → (アルバイト,大阪) → ... → (アルバイト,松山) → (パート,東京)
-        → 20 tick で同じキーワード → キーワードが枯渇するまで keyword 変化しない
-    良い順序 (新): (アルバイト,東京) → (パート,東京) → (飲食,東京) → ... → (Web,東京) → (アルバイト,大阪)
-        → 40 tick で全キーワード網羅 → キーワード多様性で URL 枯渇回避
+    PHONE_FOCUSED_ONLY=true 環境変数で 電話高カテゴリ のみに絞る。
+    デフォルトは全 208 キーワード x 全地域。
     """
-    return [(kw, loc) for loc in INDEED_LOCATIONS for kw in INDEED_KEYWORDS]
+    phone_focused = os.environ.get("PHONE_FOCUSED_ONLY", "").lower() in ("true", "1", "yes")
+    keywords = PHONE_FOCUSED_KEYWORDS if phone_focused else INDEED_KEYWORDS
+    return [(kw, loc) for loc in INDEED_LOCATIONS for kw in keywords]
 
 
 HELLOWORK_KEYWORDS: list[str] = [

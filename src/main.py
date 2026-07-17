@@ -304,7 +304,12 @@ def _cmd_validate(args: argparse.Namespace, logger: logging.Logger) -> int:
                     location=location,
                     max_pages=args.max_pages_per_tick,
                 ):
-                    if store.save_posting(posting, site, keyword, location):
+                    require_phone = os.environ.get("REQUIRE_PHONE", "").lower() in (
+                        "true", "1", "yes"
+                    )
+                    if store.save_posting(
+                        posting, site, keyword, location, require_phone=require_phone
+                    ):
                         items_new += 1
                     else:
                         items_dup += 1
