@@ -1,9 +1,10 @@
 name: Scrape Indeed (Apify)
 
 on:
-  # 20 分毎に自動 tick (Apify は fast なので短周期 OK)
-  schedule:
-    - cron: '*/20 * * * *'
+  # 【schedule 一時停止】5000 電話到達済のため 手動 tick のみ
+  # 再開する時は以下 schedule ブロックのコメントを外す:
+  # schedule:
+  #   - cron: '*/20 * * * *'
 
   workflow_dispatch:
     inputs:
