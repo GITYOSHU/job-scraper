@@ -26,6 +26,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .apify_scraper import ApifyIndeedScraper, ApifyScrapingError
 from .csv_writer import CsvWriter
 from .hellowork import HelloWorkScraper
 from .proxy_config import load_proxy_from_env
@@ -51,6 +52,12 @@ def _configure_logging(log_level: str, log_file: str | None) -> None:
 def _make_scraper(site: str, delay: float, headless: bool):
     if site == "hellowork":
         return HelloWorkScraper(request_delay_seconds=delay, headless=headless)
+    # Indeed の engine 選択: SCRAPER_ENGINE env で切替
+    #   - "apify" (default): Apify misceres/indeed-scraper (安価・効率的)
+    #   - "bright_data": Playwright + Bright Data proxy (旧方式)
+    engine = os.environ.get("SCRAPER_ENGINE", "apify").lower()
+    if engine == "apify":
+        return ApifyIndeedScraper(request_delay_seconds=delay, headless=headless)
     proxy = load_proxy_from_env()
     return IndeedScraper(
         request_delay_seconds=delay, headless=headless, proxy=proxy
@@ -148,6 +155,14 @@ def _cmd_tick(args: argparse.Namespace, logger: logging.Logger) -> int:
                     store.set_pause(site, pause_sec, reason=str(e))
                     query_status = "banned"
                     tick_status = "banned"
+                except ApifyScrapingError as e:
+                    logger.error(f"Apify エラー (query {q_index + 1}): {e}")
+                    query_status = "error"
+                    # Apify quota/auth 系 は pause 相当 (BAN と同扱い)
+                    if "402" in str(e) or "429" in str(e) or "quota" in str(e).lower():
+                        pause_sec = int(os.getenv("BAN_PAUSE_SECONDS", "3600"))
+                        store.set_pause(site, pause_sec, reason=str(e))
+                        tick_status = "banned"
                 except Exception as e:
                     logger.exception(f"query {q_index + 1} 中エラー: {e}")
                     query_status = "error"
