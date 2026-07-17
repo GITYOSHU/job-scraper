@@ -152,7 +152,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 lxml python-dotenv tenacity gspread google-auth
+          pip install -r requirements.txt
 
       - name: Download all shard state artifacts
         uses: actions/download-artifact@v4
