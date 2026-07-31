@@ -17,6 +17,7 @@ on:
           - tick
           - status
           - export
+          - analyze
       max_pages:
         description: 'tick 内の 1 検索クエリあたり取得ページ数 (Apify は max_items 換算・1 page ≒ 15 items)'
         required: false
@@ -206,3 +207,39 @@ jobs:
               echo "- ファイル: \`$FILE\`"
             } >> $GITHUB_STEP_SUMMARY
           fi
+
+  analyze-merged:
+    needs: scrape
+    if: github.event.inputs.mode == 'analyze'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download all shard state artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: indeed-state-shard-*
+          path: data
+          merge-multiple: true
+
+      - name: Analyze hit rates (全 shard 合算・命中率低い順)
+        run: |
+          python -m src.main analyze --site indeed --all-shards --top 50 | tee analyze.txt
+          {
+            echo "## Indeed キーワード×地域 電話番号命中率分析 (全 shard 合算)"
+            echo '```'
+            cat analyze.txt
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY

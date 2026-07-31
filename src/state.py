@@ -162,6 +162,7 @@ class StateStore:
                     finished_at TEXT,
                     items_new INTEGER DEFAULT 0,
                     items_dup INTEGER DEFAULT 0,
+                    items_no_phone INTEGER DEFAULT 0,
                     status TEXT DEFAULT 'running'
                 );
 
@@ -171,6 +172,10 @@ class StateStore:
                     reason TEXT
                 );
             """)
+            # items_no_phone 追加前の既存 DB (GitHub Actions artifact 等) をマイグレーション
+            cols = [row[1] for row in c.execute("PRAGMA table_info(runs)").fetchall()]
+            if "items_no_phone" not in cols:
+                c.execute("ALTER TABLE runs ADD COLUMN items_no_phone INTEGER DEFAULT 0")
 
     def is_url_known(self, job_url: str) -> bool:
         with self._conn() as c:
@@ -237,19 +242,22 @@ class StateStore:
         run_id: int,
         items_new: int,
         items_dup: int,
+        items_no_phone: int = 0,
         status: str = "completed",
     ) -> None:
         with self._conn() as c:
             c.execute(
                 """
                 UPDATE runs
-                SET finished_at = ?, items_new = ?, items_dup = ?, status = ?
+                SET finished_at = ?, items_new = ?, items_dup = ?,
+                    items_no_phone = ?, status = ?
                 WHERE id = ?
                 """,
                 (
                     datetime.now(JST).isoformat(timespec="seconds"),
                     items_new,
                     items_dup,
+                    items_no_phone,
                     status,
                     run_id,
                 ),
@@ -337,6 +345,44 @@ class StateStore:
             )
             for r in rows
         ]
+
+    def query_hit_rates(self, site: str) -> list[dict]:
+        """keyword×location ごとの fetch 総数と電話番号命中率を集計する。
+
+        命中率が低い順にソートして返す (pool から間引く候補を見つけやすくする)。
+        fetch 総数 (items_new + items_dup + items_no_phone) が 0 の組は含めない。
+        """
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT keyword, location,
+                       SUM(items_new) AS new_sum,
+                       SUM(items_dup) AS dup_sum,
+                       SUM(items_no_phone) AS no_phone_sum
+                FROM runs
+                WHERE site = ?
+                GROUP BY keyword, location
+                """,
+                (site,),
+            ).fetchall()
+
+        result = []
+        for r in rows:
+            new_sum = r["new_sum"] or 0
+            fetched = new_sum + (r["dup_sum"] or 0) + (r["no_phone_sum"] or 0)
+            if fetched == 0:
+                continue
+            result.append(
+                {
+                    "keyword": r["keyword"],
+                    "location": r["location"],
+                    "fetched": fetched,
+                    "with_phone": new_sum,
+                    "hit_rate": new_sum / fetched,
+                }
+            )
+        result.sort(key=lambda d: d["hit_rate"])
+        return result
 
     def recent_runs(self, site: str, limit: int = 10) -> list[dict]:
         with self._conn() as c:

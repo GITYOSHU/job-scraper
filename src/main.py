@@ -117,9 +117,11 @@ def _cmd_tick(args: argparse.Namespace, logger: logging.Logger) -> int:
     headless = os.getenv("HEADLESS", "true").lower() == "true"
     delay = float(os.getenv("REQUEST_DELAY_SECONDS", "60" if site == "indeed" else "3"))
     queries_per_tick = int(os.getenv("QUERIES_PER_TICK", "10"))
+    require_phone = os.environ.get("REQUIRE_PHONE", "").lower() in ("true", "1", "yes")
 
     total_new = 0
     total_dup = 0
+    total_no_phone = 0
     tick_status = "completed"
 
     logger.info(f"tick 開始: site={site} queries_per_tick={queries_per_tick}")
@@ -139,12 +141,16 @@ def _cmd_tick(args: argparse.Namespace, logger: logging.Logger) -> int:
                 run_id = store.start_run(site, keyword, location)
                 items_new = 0
                 items_dup = 0
+                items_no_phone = 0
                 query_status = "completed"
 
                 try:
                     for posting in scraper.search(
                         keyword=keyword, location=location, max_pages=args.max_pages
                     ):
+                        if require_phone and not posting.phone_number:
+                            items_no_phone += 1
+                            continue
                         if store.save_posting(posting, site, keyword, location):
                             items_new += 1
                         else:
@@ -167,9 +173,12 @@ def _cmd_tick(args: argparse.Namespace, logger: logging.Logger) -> int:
                     logger.exception(f"query {q_index + 1} 中エラー: {e}")
                     query_status = "error"
                 finally:
-                    store.finish_run(run_id, items_new, items_dup, status=query_status)
+                    store.finish_run(
+                        run_id, items_new, items_dup, items_no_phone, status=query_status
+                    )
                     total_new += items_new
                     total_dup += items_dup
+                    total_no_phone += items_no_phone
 
                 if query_status == "banned":
                     break
@@ -179,8 +188,8 @@ def _cmd_tick(args: argparse.Namespace, logger: logging.Logger) -> int:
 
     counts = store.counts(site)
     logger.info(
-        f"tick 完了: new={total_new} dup={total_dup} status={tick_status} "
-        f"total={counts['total']} with_phone={counts['with_phone']}"
+        f"tick 完了: new={total_new} dup={total_dup} no_phone={total_no_phone} "
+        f"status={tick_status} total={counts['total']} with_phone={counts['with_phone']}"
     )
     return 0 if tick_status in ("completed", "banned") else 1
 
@@ -203,6 +212,52 @@ def _cmd_status(args: argparse.Namespace, logger: logging.Logger) -> int:
             f"start={r['started_at']}  end={finished}  "
             f"new={r['items_new']}  dup={r['items_dup']}  status={r['status']}"
         )
+    return 0
+
+
+def _cmd_analyze(args: argparse.Namespace, logger: logging.Logger) -> int:
+    """keyword×location ごとの電話番号命中率を分析する。
+
+    --all-shards 指定時は data/state-shard-*.db 全ての run 集計を合算する。
+    命中率が低い組み合わせを pool から間引く判断材料にする。
+    """
+    if getattr(args, "all_shards", False):
+        shard_dbs = sorted(Path("data").glob("state-shard-*.db"))
+        if not shard_dbs:
+            logger.warning("state-shard-*.db が見つかりません。デフォルト state.db にフォールバック")
+            shard_dbs = [None]
+        merged: dict[tuple[str, str], dict] = {}
+        for db_path in shard_dbs:
+            shard_store = StateStore(db_path=db_path) if db_path else StateStore()
+            for r in shard_store.query_hit_rates(args.site):
+                key = (r["keyword"], r["location"])
+                existing = merged.get(key)
+                if existing is None:
+                    merged[key] = dict(r)
+                else:
+                    existing["fetched"] += r["fetched"]
+                    existing["with_phone"] += r["with_phone"]
+        rates = list(merged.values())
+        for r in rates:
+            r["hit_rate"] = r["with_phone"] / r["fetched"] if r["fetched"] else 0.0
+        rates.sort(key=lambda d: d["hit_rate"])
+    else:
+        store = StateStore()
+        rates = store.query_hit_rates(args.site)
+
+    print(f"=== 命中率分析: site={args.site} (低い順、間引き候補) ===")
+    print(f"{'キーワード':<14}{'地域':<10}{'fetch数':>8}{'電話あり':>8}{'命中率':>8}")
+    for r in rates[: args.top]:
+        print(
+            f"{r['keyword']:<14}{r['location']:<10}{r['fetched']:>8}"
+            f"{r['with_phone']:>8}{r['hit_rate'] * 100:>7.1f}%"
+        )
+    if rates:
+        total_fetched = sum(r["fetched"] for r in rates)
+        total_phone = sum(r["with_phone"] for r in rates)
+        print("-" * 48)
+        print(f"全体: fetch={total_fetched} 電話あり={total_phone} "
+              f"命中率={total_phone / total_fetched * 100:.1f}%")
     return 0
 
 
@@ -418,6 +473,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="進捗確認")
     p_status.add_argument("--site", choices=["hellowork", "indeed"], default="indeed")
 
+    # analyze (キーワード×地域の命中率分析)
+    p_analyze = sub.add_parser(
+        "analyze", help="キーワード×地域ごとの電話番号命中率を分析 (間引き候補の洗い出し)"
+    )
+    p_analyze.add_argument("--site", choices=["hellowork", "indeed"], default="indeed")
+    p_analyze.add_argument(
+        "--all-shards",
+        action="store_true",
+        help="data/state-shard-*.db の run 集計を全て合算して分析",
+    )
+    p_analyze.add_argument("--top", type=int, default=30, help="表示する件数 (命中率の低い順)")
+
     # export
     p_export = sub.add_parser("export", help="電話番号あり求人を CSV エクスポート")
     p_export.add_argument("--site", choices=["hellowork", "indeed"], default="indeed")
@@ -448,7 +515,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _parse_args_with_legacy() -> argparse.Namespace:
     """後方互換: 旧 CLI (subcommand なし) を scrape として扱う。"""
     argv = sys.argv[1:]
-    known_commands = {"scrape", "tick", "status", "export", "validate"}
+    known_commands = {"scrape", "tick", "status", "export", "validate", "analyze"}
     if not argv or (argv[0].startswith("-") and argv[0] not in known_commands):
         argv = ["scrape"] + argv
     return _build_parser().parse_args(argv)
@@ -469,6 +536,8 @@ def main() -> int:
         return _cmd_tick(args, logger)
     if args.command == "status":
         return _cmd_status(args, logger)
+    if args.command == "analyze":
+        return _cmd_analyze(args, logger)
     if args.command == "export":
         return _cmd_export(args, logger)
     if args.command == "validate":
