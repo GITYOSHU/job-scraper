@@ -23,7 +23,7 @@ on:
         default: '3'
         type: string
       since:
-        description: 'export モード時のみ有効: この日時 (ISO8601) より後の新規分だけ出力 (差分エクスポート)'
+        description: 'export モード時のみ有効: この日時 (ISO8601) より前に初出の電話番号は除外 (旧ファイルと重複しない差分エクスポート)'
         required: false
         default: '2026-07-17T05:56:56.648Z'
         type: string
@@ -172,7 +172,7 @@ jobs:
           TIMESTAMP=$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)
           echo "timestamp=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
 
-      - name: Merge shards and export CSV (since 以降の新規分のみ・差分ファイル)
+      - name: Merge shards and export CSV (電話番号重複排除 + since 以前初出の電話番号を除外・差分ファイル)
         env:
           SINCE: ${{ github.event.inputs.since }}
         run: |

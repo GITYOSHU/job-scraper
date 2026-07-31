@@ -32,7 +32,7 @@ from .hellowork import HelloWorkScraper
 from .proxy_config import load_proxy_from_env
 from .query_pools import hellowork_query_pool, indeed_query_pool
 from .scraper import BanDetectedError, IndeedScraper
-from .state import StateStore
+from .state import StateStore, dedupe_by_phone
 
 
 def _configure_logging(log_level: str, log_file: str | None) -> None:
@@ -211,35 +211,41 @@ def _cmd_export(args: argparse.Namespace, logger: logging.Logger) -> int:
 
     --all-shards が指定されている場合、data/state-shard-*.db 全てを読み込み、
     job_url で UNION (最新の scraped_at 優先) して出力する。
+    そのうえで電話番号ベースの重複排除を行う (同一電話番号は最新 1 件のみ・
+    二重架電防止)。--since 指定時はさらに、電話番号の初出が since 以前の
+    求人を除外する (旧 export 済みファイルと重複しない差分エクスポート)。
     """
     output_path = Path(args.output)
 
     since = getattr(args, "since", None)
     if since:
-        logger.info(f"差分エクスポート: since={since} より後の求人のみ")
+        logger.info(f"差分エクスポート: since={since} より前に初出の電話番号は除外")
 
     if getattr(args, "all_shards", False):
         shard_dbs = sorted(Path("data").glob("state-shard-*.db"))
         if not shard_dbs:
             logger.warning("state-shard-*.db が見つかりません。デフォルト state.db にフォールバック")
             store = StateStore()
-            postings = store.export_with_phone(args.site, since=since)
+            raw_postings = store.export_with_phone(args.site)
         else:
             logger.info(f"{len(shard_dbs)} 個の shard DB を merge: {[p.name for p in shard_dbs]}")
             by_url: dict[str, object] = {}
             for db_path in shard_dbs:
                 shard_store = StateStore(db_path=db_path)
-                for posting in shard_store.export_with_phone(args.site, since=since):
+                for posting in shard_store.export_with_phone(args.site):
                     existing = by_url.get(posting.job_url)
                     if existing is None or (
                         (posting.scraped_at or "") > (existing.scraped_at or "")
                     ):
                         by_url[posting.job_url] = posting
-            postings = list(by_url.values())
-            postings.sort(key=lambda p: p.scraped_at or "", reverse=True)
+            raw_postings = list(by_url.values())
     else:
         store = StateStore()
-        postings = store.export_with_phone(args.site, since=since)
+        raw_postings = store.export_with_phone(args.site)
+
+    postings = dedupe_by_phone(raw_postings, since=since)
+    if len(postings) != len(raw_postings):
+        logger.info(f"電話番号重複排除: {len(raw_postings)} 件 → {len(postings)} 件")
 
     logger.info(f"電話番号あり {len(postings)} 件を CSV に書き出します。")
     writer = CsvWriter(output_dir=output_path.parent, filename=output_path.name)

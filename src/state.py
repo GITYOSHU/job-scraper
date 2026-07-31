@@ -52,6 +52,67 @@ def _parse_flexible_iso(value: str) -> Optional[datetime]:
     return parsed
 
 
+def dedupe_by_phone(
+    postings: list[JobPosting], since: Optional[str] = None
+) -> list[JobPosting]:
+    """電話番号ベースで重複排除する (架電リストの二重架電防止)。
+
+    同一電話番号の求人が複数 (別店舗・別 URL 含む) あっても、最新の scraped_at
+    1 件だけ残す。site をまたいだ複数 shard の生データを merge した後に
+    1 回だけ適用する想定 (shard 単位では重複判定できないため)。
+
+    since 指定時は「電話番号の初出 (全 postings 中で最も古い scraped_at) が
+    since より後」のものだけを残す。同じ電話番号が since 以前に一度でも
+    出現していれば、since 以降の再出現分も除外する
+    (旧 export 済みファイルとの重複を避ける差分エクスポート用)。
+    タイムゾーン不明・パース不能な scraped_at は安全側 (除外) に倒す。
+    """
+    since_dt = _parse_flexible_iso(since) if since else None
+
+    parsed = [
+        (p, _parse_flexible_iso(p.scraped_at or ""))
+        for p in postings
+        if p.phone_number
+    ]
+
+    # 電話番号ごとの初出時刻。パース不能な scraped_at が一度でも混ざれば
+    # None (＝安全側で「since 以前」扱い) にする。
+    first_seen_at: dict[str, Optional[datetime]] = {}
+    for p, dt in parsed:
+        phone = p.phone_number
+        if phone not in first_seen_at:
+            first_seen_at[phone] = dt
+            continue
+        existing = first_seen_at[phone]
+        if existing is None or dt is None:
+            first_seen_at[phone] = None
+        elif dt < existing:
+            first_seen_at[phone] = dt
+
+    ordered = sorted(
+        parsed,
+        key=lambda pair: pair[1] or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+
+    seen_phones: set[str] = set()
+    result: list[JobPosting] = []
+    for p, dt in ordered:
+        phone = p.phone_number
+        if phone in seen_phones:
+            continue
+        if since_dt is not None:
+            if dt is None or dt <= since_dt:
+                continue
+            first_dt = first_seen_at.get(phone)
+            if first_dt is None or first_dt <= since_dt:
+                continue
+        seen_phones.add(phone)
+        result.append(p)
+
+    return result
+
+
 class StateStore:
     """SQLite ベースの状態ストア。スレッドセーフではない (単一プロセス想定)。
 
@@ -247,13 +308,11 @@ class StateStore:
             ).fetchone()[0]
         return {"total": total, "with_phone": with_phone}
 
-    def export_with_phone(
-        self, site: str, since: Optional[str] = None
-    ) -> list[JobPosting]:
-        """電話番号ありの求人を JobPosting のリストで返す。
+    def export_with_phone(self, site: str) -> list[JobPosting]:
+        """電話番号ありの求人を JobPosting のリストで返す (URL 単位で一意、全件)。
 
-        since 指定時は scraped_at がそれより後 (実時刻比較) の求人のみ返す
-        (差分エクスポート用)。Z/+09:00 混在タイムゾーンも実時刻で正しく比較する。
+        電話番号ベースの重複排除・差分抽出は dedupe_by_phone() で
+        複数 shard の merge 後にまとめて行う (shard 単位では正しく判定できないため)。
         """
         with self._conn() as c:
             rows = c.execute(
@@ -266,26 +325,18 @@ class StateStore:
                 """,
                 (site,),
             ).fetchall()
-
-        since_dt = _parse_flexible_iso(since) if since else None
-        postings = []
-        for r in rows:
-            if since_dt is not None:
-                row_dt = _parse_flexible_iso(r["scraped_at"] or "")
-                if row_dt is None or row_dt <= since_dt:
-                    continue
-            postings.append(
-                JobPosting(
-                    company_name=r["company_name"],
-                    address=r["address"],
-                    phone_number=r["phone_number"],
-                    industry=r["industry"],
-                    representative_name=r["representative_name"],
-                    job_url=r["job_url"],
-                    scraped_at=r["scraped_at"],
-                )
+        return [
+            JobPosting(
+                company_name=r["company_name"],
+                address=r["address"],
+                phone_number=r["phone_number"],
+                industry=r["industry"],
+                representative_name=r["representative_name"],
+                job_url=r["job_url"],
+                scraped_at=r["scraped_at"],
             )
-        return postings
+            for r in rows
+        ]
 
     def recent_runs(self, site: str, limit: int = 10) -> list[dict]:
         with self._conn() as c:
