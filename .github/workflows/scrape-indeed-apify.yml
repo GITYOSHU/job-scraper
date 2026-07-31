@@ -1,10 +1,10 @@
 name: Scrape Indeed (Apify)
 
 on:
-  # 【schedule 一時停止】5000 電話到達済のため 手動 tick のみ
-  # 再開する時は以下 schedule ブロックのコメントを外す:
-  # schedule:
-  #   - cron: '*/20 * * * *'
+  # 50,000 件目標のため再開 (2026-07-31)。旧目標 5,000 電話到達分は
+  # indeed-phone-merged-20260717-151339 で export 済み。以降は差分のみ export する。
+  schedule:
+    - cron: '*/20 * * * *'
 
   workflow_dispatch:
     inputs:
@@ -21,6 +21,11 @@ on:
         description: 'tick 内の 1 検索クエリあたり取得ページ数 (Apify は max_items 換算・1 page ≒ 15 items)'
         required: false
         default: '3'
+        type: string
+      since:
+        description: 'export モード時のみ有効: この日時 (ISO8601) より後の新規分だけ出力 (差分エクスポート)'
+        required: false
+        default: '2026-07-17T05:56:56.648Z'
         type: string
 
 concurrency:
@@ -167,27 +172,35 @@ jobs:
           TIMESTAMP=$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)
           echo "timestamp=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
 
-      - name: Merge shards and export CSV
+      - name: Merge shards and export CSV (since 以降の新規分のみ・差分ファイル)
+        env:
+          SINCE: ${{ github.event.inputs.since }}
         run: |
-          FILE="output/indeed-phone-${{ steps.params.outputs.timestamp }}.csv"
-          python -m src.main export --site indeed --output "$FILE" --all-shards
+          FILE="output/indeed-phone-diff-${{ steps.params.outputs.timestamp }}.csv"
+          if [ -n "$SINCE" ]; then
+            python -m src.main export --site indeed --output "$FILE" --all-shards --since "$SINCE"
+          else
+            python -m src.main export --site indeed --output "$FILE" --all-shards
+          fi
           echo "csv=$FILE" >> $GITHUB_ENV
 
       - name: Upload merged CSV
         uses: actions/upload-artifact@v4
         with:
-          name: indeed-phone-merged-${{ steps.params.outputs.timestamp }}
+          name: indeed-phone-diff-${{ steps.params.outputs.timestamp }}
           path: ${{ env.csv }}
           retention-days: 30
 
       - name: Summary
+        env:
+          SINCE: ${{ github.event.inputs.since }}
         run: |
-          FILE="output/indeed-phone-${{ steps.params.outputs.timestamp }}.csv"
+          FILE="${{ env.csv }}"
           if [ -f "$FILE" ]; then
             LINES=$(wc -l < "$FILE")
             HEAD_LINE=$(tail -n +2 "$FILE" | wc -l)
             {
-              echo "## Indeed 電話番号あり CSV (全 shard merge)"
+              echo "## Indeed 電話番号あり CSV (差分・since=$SINCE 以降)"
               echo "- 総行数: $LINES (ヘッダー含む)"
               echo "- レコード数: $HEAD_LINE"
               echo "- ファイル: \`$FILE\`"

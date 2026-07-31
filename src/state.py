@@ -34,6 +34,24 @@ def _resolve_db_path(explicit: str | Path | None) -> Path:
     return DEFAULT_DB_PATH
 
 
+def _parse_flexible_iso(value: str) -> Optional[datetime]:
+    """"...Z" (UTC) と "...+09:00" (JST) が混在する scraped_at を比較可能な形にする。
+
+    naive (tzinfo 無し) な値やパース不能な値は None を返す
+    (since フィルタでは除外側に倒す＝安全側)。
+    """
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
+
+
 class StateStore:
     """SQLite ベースの状態ストア。スレッドセーフではない (単一プロセス想定)。
 
@@ -229,8 +247,14 @@ class StateStore:
             ).fetchone()[0]
         return {"total": total, "with_phone": with_phone}
 
-    def export_with_phone(self, site: str) -> list[JobPosting]:
-        """電話番号ありの求人を JobPosting のリストで返す。"""
+    def export_with_phone(
+        self, site: str, since: Optional[str] = None
+    ) -> list[JobPosting]:
+        """電話番号ありの求人を JobPosting のリストで返す。
+
+        since 指定時は scraped_at がそれより後 (実時刻比較) の求人のみ返す
+        (差分エクスポート用)。Z/+09:00 混在タイムゾーンも実時刻で正しく比較する。
+        """
         with self._conn() as c:
             rows = c.execute(
                 """
@@ -242,18 +266,26 @@ class StateStore:
                 """,
                 (site,),
             ).fetchall()
-        return [
-            JobPosting(
-                company_name=r["company_name"],
-                address=r["address"],
-                phone_number=r["phone_number"],
-                industry=r["industry"],
-                representative_name=r["representative_name"],
-                job_url=r["job_url"],
-                scraped_at=r["scraped_at"],
+
+        since_dt = _parse_flexible_iso(since) if since else None
+        postings = []
+        for r in rows:
+            if since_dt is not None:
+                row_dt = _parse_flexible_iso(r["scraped_at"] or "")
+                if row_dt is None or row_dt <= since_dt:
+                    continue
+            postings.append(
+                JobPosting(
+                    company_name=r["company_name"],
+                    address=r["address"],
+                    phone_number=r["phone_number"],
+                    industry=r["industry"],
+                    representative_name=r["representative_name"],
+                    job_url=r["job_url"],
+                    scraped_at=r["scraped_at"],
+                )
             )
-            for r in rows
-        ]
+        return postings
 
     def recent_runs(self, site: str, limit: int = 10) -> list[dict]:
         with self._conn() as c:

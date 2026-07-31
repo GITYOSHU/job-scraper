@@ -214,18 +214,22 @@ def _cmd_export(args: argparse.Namespace, logger: logging.Logger) -> int:
     """
     output_path = Path(args.output)
 
+    since = getattr(args, "since", None)
+    if since:
+        logger.info(f"差分エクスポート: since={since} より後の求人のみ")
+
     if getattr(args, "all_shards", False):
         shard_dbs = sorted(Path("data").glob("state-shard-*.db"))
         if not shard_dbs:
             logger.warning("state-shard-*.db が見つかりません。デフォルト state.db にフォールバック")
             store = StateStore()
-            postings = store.export_with_phone(args.site)
+            postings = store.export_with_phone(args.site, since=since)
         else:
             logger.info(f"{len(shard_dbs)} 個の shard DB を merge: {[p.name for p in shard_dbs]}")
             by_url: dict[str, object] = {}
             for db_path in shard_dbs:
                 shard_store = StateStore(db_path=db_path)
-                for posting in shard_store.export_with_phone(args.site):
+                for posting in shard_store.export_with_phone(args.site, since=since):
                     existing = by_url.get(posting.job_url)
                     if existing is None or (
                         (posting.scraped_at or "") > (existing.scraped_at or "")
@@ -235,7 +239,7 @@ def _cmd_export(args: argparse.Namespace, logger: logging.Logger) -> int:
             postings.sort(key=lambda p: p.scraped_at or "", reverse=True)
     else:
         store = StateStore()
-        postings = store.export_with_phone(args.site)
+        postings = store.export_with_phone(args.site, since=since)
 
     logger.info(f"電話番号あり {len(postings)} 件を CSV に書き出します。")
     writer = CsvWriter(output_dir=output_path.parent, filename=output_path.name)
@@ -416,6 +420,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--all-shards",
         action="store_true",
         help="data/state-shard-*.db を全て merge して出力",
+    )
+    p_export.add_argument(
+        "--since",
+        default=None,
+        help="この日時 (ISO8601) より後に取得した求人のみ出力 (差分エクスポート用)",
     )
 
     # validate (Bright Data 疎通 + 電話率実測)
