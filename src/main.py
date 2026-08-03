@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -32,6 +33,7 @@ from .hellowork import HelloWorkScraper
 from .proxy_config import load_proxy_from_env
 from .query_pools import hellowork_query_pool, indeed_query_pool
 from .scraper import BanDetectedError, IndeedScraper
+from .dataset_probe import estimate, load_records, probe
 from .state import StateStore, dedupe_by_phone, normalize_phone_numbers
 
 
@@ -258,6 +260,58 @@ def _cmd_analyze(args: argparse.Namespace, logger: logging.Logger) -> int:
         print("-" * 48)
         print(f"全体: fetch={total_fetched} 電話あり={total_phone} "
               f"命中率={total_phone / total_fetched * 100:.1f}%")
+    return 0
+
+
+def _cmd_probe_dataset(args: argparse.Namespace, logger: logging.Logger) -> int:
+    """既成データセットの無料サンプルを解析し、購入判断に必要な数字を出す。
+
+    納品時と同じ電話番号抽出ロジックを通すので、ここで出る命中率が
+    そのまま実運用の見込み値になる。
+    """
+    path = Path(args.input)
+    try:
+        raw_records = load_records(path)
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        logger.error(f"サンプルの読み込みに失敗しました: {e}")
+        return 1
+
+    report = probe(raw_records)
+    print(f"=== データセットサンプル判定: {path.name} ===")
+    print(f"  総レコード数          {report.total:>10,}")
+    print(f"  うち日本             {report.japan:>10,}  ({report.japan_rate * 100:.1f}%)")
+    if report.japan == 0:
+        print("\n  日本のレコードが 0 件です。この データセットは使えません。")
+        return 0
+
+    print(f"  description あり      {report.with_description:>10,}")
+    print(f"  電話番号 抽出成功      {report.with_phone:>10,}  ({report.phone_rate * 100:.1f}%)")
+    print(f"  うちユニーク番号       {report.unique_phones:>10,}")
+    print(f"  電話番号なし          {report.without_phone:>10,}")
+    print(f"    うち企業サイトあり    {report.without_phone_with_website:>10,}"
+          f"  ← contact-details-scraper で補完可能")
+
+    target = getattr(args, "target", None)
+    print("\n=== 単価試算 ===")
+    for label, contact_price in [
+        ("description のみ", None),
+        ("+ 企業サイト補完", args.contact_price),
+    ]:
+        if contact_price is None and label.startswith("+"):
+            continue
+        est = estimate(
+            report,
+            record_price_usd=args.record_price,
+            jpy_rate=args.jpy,
+            contact_price_usd=contact_price,
+            contact_success_rate=args.contact_success_rate,
+            target=target,
+        )
+        print(f"  [{label}] 納品 {est.delivered:,} 件 / "
+              f"費用 {est.total_cost_jpy:,.0f}円 / 単価 {est.unit_cost_jpy:.2f}円")
+        if target:
+            print(f"      → {target:,} 件には {est.records_needed_for_target:,.0f} レコード購入が必要 "
+                  f"({est.target_cost_jpy:,.0f}円)")
     return 0
 
 
@@ -506,6 +560,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="この日時 (ISO8601) より後に取得した求人のみ出力 (差分エクスポート用)",
     )
 
+    # probe-dataset (既成データセットの無料サンプルを購入前に判定)
+    p_probe = sub.add_parser(
+        "probe-dataset",
+        help="既成データセットのサンプルを解析し、日本の件数・電話率・単価を出す",
+    )
+    p_probe.add_argument("--input", required=True, help="サンプルファイル (json/ndjson/jsonl/csv、.gz 可)")
+    p_probe.add_argument(
+        "--record-price", type=float, default=0.0025,
+        help="1 レコードあたりの購入単価 (USD)。Bright Data Indeed は $0.0025",
+    )
+    p_probe.add_argument("--jpy", type=float, default=150.0, help="USD/JPY レート")
+    p_probe.add_argument(
+        "--contact-price", type=float, default=None,
+        help="企業サイトから電話を補完する場合の成功時単価 (USD)。"
+             "Apify contact-details-scraper は $0.0045",
+    )
+    p_probe.add_argument(
+        "--contact-success-rate", type=float, default=0.7,
+        help="企業サイトから電話が取れる想定成功率",
+    )
+    p_probe.add_argument(
+        "--target", type=int, default=None, help="目標納品件数 (必要な購入レコード数を逆算)",
+    )
+
     # validate (Bright Data 疎通 + 電話率実測)
     p_validate = sub.add_parser(
         "validate", help="Bright Data proxy 経由で N 件叩いて成功率 + 電話率を測定"
@@ -521,7 +599,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _parse_args_with_legacy() -> argparse.Namespace:
     """後方互換: 旧 CLI (subcommand なし) を scrape として扱う。"""
     argv = sys.argv[1:]
-    known_commands = {"scrape", "tick", "status", "export", "validate", "analyze"}
+    known_commands = {"scrape", "tick", "status", "export", "validate", "analyze", "probe-dataset"}
     if not argv or (argv[0].startswith("-") and argv[0] not in known_commands):
         argv = ["scrape"] + argv
     return _build_parser().parse_args(argv)
@@ -542,6 +620,9 @@ def main() -> int:
         return _cmd_tick(args, logger)
     if args.command == "status":
         return _cmd_status(args, logger)
+    if args.command == "probe-dataset":
+        return _cmd_probe_dataset(args, logger)
+
     if args.command == "analyze":
         return _cmd_analyze(args, logger)
     if args.command == "export":
