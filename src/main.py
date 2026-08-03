@@ -32,7 +32,7 @@ from .hellowork import HelloWorkScraper
 from .proxy_config import load_proxy_from_env
 from .query_pools import hellowork_query_pool, indeed_query_pool
 from .scraper import BanDetectedError, IndeedScraper
-from .state import StateStore, dedupe_by_phone
+from .state import StateStore, dedupe_by_phone, normalize_phone_numbers
 
 
 def _configure_logging(log_level: str, log_file: str | None) -> None:
@@ -298,9 +298,15 @@ def _cmd_export(args: argparse.Namespace, logger: logging.Logger) -> int:
         store = StateStore()
         raw_postings = store.export_with_phone(args.site)
 
-    postings = dedupe_by_phone(raw_postings, since=since)
-    if len(postings) != len(raw_postings):
-        logger.info(f"電話番号重複排除: {len(raw_postings)} 件 → {len(postings)} 件")
+    normalized = normalize_phone_numbers(raw_postings)
+    if len(normalized) != len(raw_postings):
+        logger.info(
+            f"無効な電話番号を除外: {len(raw_postings)} 件 → {len(normalized)} 件"
+        )
+
+    postings = dedupe_by_phone(normalized, since=since)
+    if len(postings) != len(normalized):
+        logger.info(f"電話番号重複排除: {len(normalized)} 件 → {len(postings)} 件")
 
     logger.info(f"電話番号あり {len(postings)} 件を CSV に書き出します。")
     writer = CsvWriter(output_dir=output_path.parent, filename=output_path.name)

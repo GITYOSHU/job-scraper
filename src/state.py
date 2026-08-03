@@ -13,10 +13,12 @@ import logging
 import os
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Iterator, Optional
 
+from .extractors import normalize_phone_number
 from .models import JobPosting
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,26 @@ def _parse_flexible_iso(value: str) -> Optional[datetime]:
     if parsed.tzinfo is None:
         return None
     return parsed
+
+
+def normalize_phone_numbers(postings: list[JobPosting]) -> list[JobPosting]:
+    """収集済み求人の電話番号を現行ルールで整形し直し、無効なものを除外する。
+
+    抽出時のバリデーションを後から追加したため、既に DB にある値には
+    旧ロジックのハイフン誤りやプレースホルダ (`000-000-0000` 等) が残っている。
+    export の直前に通すことで、納品 CSV 側だけでも品質を揃える。
+    元の JobPosting は書き換えず、新しいインスタンスを返す。
+    """
+    result: list[JobPosting] = []
+    for posting in postings:
+        normalized = normalize_phone_number(posting.phone_number)
+        if not normalized:
+            continue
+        if normalized == posting.phone_number:
+            result.append(posting)
+        else:
+            result.append(replace(posting, phone_number=normalized))
+    return result
 
 
 def dedupe_by_phone(

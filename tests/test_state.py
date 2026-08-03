@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from src.models import JobPosting
-from src.state import StateStore, dedupe_by_phone
+from src.state import StateStore, dedupe_by_phone, normalize_phone_numbers
 
 
 def _make_posting(
@@ -46,6 +46,67 @@ def test_export_with_phone_returns_all_with_phone_numbers(store: StateStore) -> 
 
     # Assert
     assert len(result) == 2
+
+
+class TestNormalizePhoneNumbers:
+    """収集済みデータの電話番号を現行ルールで整形し直し、無効値を落とす。"""
+
+    def test_fixes_hyphen_position_of_four_digit_area_code(self) -> None:
+        # Arrange: 旧整形ロジックが 4 桁市外局番を 3 桁で割ってしまった値
+        posting = _make_posting("https://example.com/1", "2026-07-20T10:00:00+09:00",
+                                phone_number="013-826-9335")
+
+        # Act
+        result = normalize_phone_numbers([posting])
+
+        # Assert
+        assert [p.phone_number for p in result] == ["0138-26-9335"]
+
+    def test_drops_postings_with_invalid_phone_number(self) -> None:
+        # Arrange
+        valid = _make_posting("https://example.com/1", "2026-07-20T10:00:00+09:00",
+                              phone_number="03-1234-5678")
+        placeholder = _make_posting("https://example.com/2", "2026-07-20T10:00:00+09:00",
+                                    phone_number="000-000-0000")
+
+        # Act
+        result = normalize_phone_numbers([valid, placeholder])
+
+        # Assert
+        assert [p.job_url for p in result] == ["https://example.com/1"]
+
+    def test_does_not_mutate_input_postings(self) -> None:
+        # Arrange
+        posting = _make_posting("https://example.com/1", "2026-07-20T10:00:00+09:00",
+                                phone_number="013-826-9335")
+
+        # Act
+        normalize_phone_numbers([posting])
+
+        # Assert: 元のオブジェクトは書き換わっていない
+        assert posting.phone_number == "013-826-9335"
+
+    def test_keeps_other_fields_unchanged(self) -> None:
+        # Arrange
+        posting = JobPosting(
+            company_name="株式会社テスト",
+            job_url="https://example.com/1",
+            address="北海道 函館市",
+            phone_number="013-826-9335",
+            industry="製造",
+            representative_name="山田",
+            scraped_at="2026-07-20T10:00:00+09:00",
+        )
+
+        # Act
+        result = normalize_phone_numbers([posting])
+
+        # Assert
+        assert result[0].company_name == "株式会社テスト"
+        assert result[0].address == "北海道 函館市"
+        assert result[0].industry == "製造"
+        assert result[0].representative_name == "山田"
+        assert result[0].scraped_at == "2026-07-20T10:00:00+09:00"
 
 
 class TestDedupeByPhone:
