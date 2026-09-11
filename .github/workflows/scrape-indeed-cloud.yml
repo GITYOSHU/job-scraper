@@ -51,6 +51,7 @@ jobs:
     timeout-minutes: 240
 
     env:
+      SCRAPER_ENGINE: 'bright_data'
       BRIGHTDATA_PROXY_URL: ${{ secrets.BRIGHTDATA_PROXY_URL }}
       # shard 毎に独立した SQLite DB
       STATE_DB: data/state-shard-${{ matrix.shard }}.db
